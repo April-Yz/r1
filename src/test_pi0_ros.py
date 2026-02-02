@@ -545,6 +545,10 @@ class PI0TestController:
         self.current_joint_left = None
         self.current_joint_right = None
         
+        # 当前夹爪值（用于计算 delta）
+        self.current_gripper_left = None
+        self.current_gripper_right = None
+        
         np.set_printoptions(precision=4, suppress=True)
     
     def compute_state_vector(self, arm_left, arm_right, gripper_left, gripper_right):
@@ -589,6 +593,7 @@ class PI0TestController:
             gripper_val = gripper_left[0] / 100.0 if gripper_left is not None and len(gripper_left) > 0 else 0.0
             state[6] = float(gripper_val)
             self.current_joint_left = joint_left
+            self.current_gripper_left = gripper_val
         
         # 右臂末端位姿
         if self.ik_solver_right is not None and arm_right is not None:
@@ -605,6 +610,7 @@ class PI0TestController:
             gripper_val = gripper_right[0] / 100.0 if gripper_right is not None and len(gripper_right) > 0 else 0.0
             state[13] = float(gripper_val)
             self.current_joint_right = joint_right
+            self.current_gripper_right = gripper_val
         
         # 剩余维度填零（根据训练数据格式，可能有额外状态维度）
         
@@ -662,7 +668,8 @@ class PI0TestController:
     
     def run_single_inference(self, head_rgb, left_rgb, right_rgb, 
                             arm_left, arm_right, gripper_left, gripper_right,
-                            task_prompt, print_only=True):
+                            task_prompt, print_only=True, show_joint_delta=False,
+                            gt_action=None, compare_gt=False):
         """运行单次推理
         
         Args:
@@ -674,11 +681,20 @@ class PI0TestController:
             gripper_left: 左夹爪位置
             gripper_right: 右夹爪位置
             task_prompt: 任务提示
-            print_only: 是否仅打印结果（不执行）
+            print_only: 是否仅打印结果（不计算 IK）
+            show_joint_delta: 是否显示关节角度变化量（需要 compute_ik）
+            gt_action: Ground truth action（用于比较，bag 模式）
+            compare_gt: 是否比较预测与真实动作
             
         Returns:
             actions: 模型预测的动作序列
         """
+        # 保存当前关节角度用于计算 delta
+        prev_joint_left = self.current_joint_left.copy() if self.current_joint_left is not None else None
+        prev_joint_right = self.current_joint_right.copy() if self.current_joint_right is not None else None
+        prev_gripper_left = self.current_gripper_left
+        prev_gripper_right = self.current_gripper_right
+        
         # 计算状态向量
         state = self.compute_state_vector(arm_left, arm_right, gripper_left, gripper_right)
         print(f"\n[Controller] State vector (14 dims, format: xyz+euler+gripper):")
@@ -708,6 +724,37 @@ class PI0TestController:
             print(f"    Left:  pos={left_action[:3]}, euler={left_action[3:6]}, gripper={left_action[6]:.4f}")
             print(f"    Right: pos={right_action[:3]}, euler={right_action[3:6]}, gripper={right_action[6]:.4f}")
         
+        # 比较预测与真实动作 (bag 模式)
+        if compare_gt and gt_action is not None:
+            print(f"\n[Controller] === Prediction vs Ground Truth Comparison ===")
+            pred_action = actions[0]  # 使用第一个预测动作比较
+            
+            # 计算误差
+            left_pred = pred_action[:7]
+            left_gt = gt_action[:7]
+            right_pred = pred_action[7:14]
+            right_gt = gt_action[7:14]
+            
+            # 位置误差 (米)
+            left_pos_error = np.linalg.norm(left_pred[:3] - left_gt[:3])
+            right_pos_error = np.linalg.norm(right_pred[:3] - right_gt[:3])
+            
+            # 姿态误差 (弧度)
+            left_euler_error = np.linalg.norm(left_pred[3:6] - left_gt[3:6])
+            right_euler_error = np.linalg.norm(right_pred[3:6] - right_gt[3:6])
+            
+            # 夹爪误差
+            left_gripper_error = abs(left_pred[6] - left_gt[6])
+            right_gripper_error = abs(right_pred[6] - right_gt[6])
+            
+            print(f"  Ground Truth Action:")
+            print(f"    Left:  pos={left_gt[:3]}, euler={left_gt[3:6]}, gripper={left_gt[6]:.4f}")
+            print(f"    Right: pos={right_gt[:3]}, euler={right_gt[3:6]}, gripper={right_gt[6]:.4f}")
+            print(f"  Errors:")
+            print(f"    Left:  pos_err={left_pos_error:.6f}m, euler_err={left_euler_error:.6f}rad, gripper_err={left_gripper_error:.4f}")
+            print(f"    Right: pos_err={right_pos_error:.6f}m, euler_err={right_euler_error:.6f}rad, gripper_err={right_gripper_error:.4f}")
+            print(f"    Total: pos_err={left_pos_error + right_pos_error:.6f}m, euler_err={left_euler_error + right_euler_error:.6f}rad")
+        
         if not print_only:
             # 转换为关节角度并输出
             print("\n[Controller] Converting to joint angles:")
@@ -726,6 +773,24 @@ class PI0TestController:
                         print(f"    Left  joints: {left_joints}, gripper: {left_gripper:.4f}, success: {left_success}")
                     if right_joints is not None:
                         print(f"    Right joints: {right_joints}, gripper: {right_gripper:.4f}, success: {right_success}")
+                    
+                    # 显示关节角度变化量 (仅对第一个 action)
+                    if show_joint_delta and i == 0:
+                        print(f"\n[Controller] === Joint Angle Delta (Action 0 vs Current State) ===")
+                        if left_joints is not None and prev_joint_left is not None:
+                            left_joint_delta = left_joints - prev_joint_left
+                            left_gripper_delta = left_gripper - (prev_gripper_left if prev_gripper_left else 0)
+                            print(f"    Left  joint delta:  {left_joint_delta}")
+                            print(f"    Left  joint |delta|: {np.abs(left_joint_delta)}")
+                            print(f"    Left  joint L2:     {np.linalg.norm(left_joint_delta):.6f} rad")
+                            print(f"    Left  gripper delta: {left_gripper_delta:.4f}")
+                        if right_joints is not None and prev_joint_right is not None:
+                            right_joint_delta = right_joints - prev_joint_right
+                            right_gripper_delta = right_gripper - (prev_gripper_right if prev_gripper_right else 0)
+                            print(f"    Right joint delta:  {right_joint_delta}")
+                            print(f"    Right joint |delta|: {np.abs(right_joint_delta)}")
+                            print(f"    Right joint L2:     {np.linalg.norm(right_joint_delta):.6f} rad")
+                            print(f"    Right gripper delta: {right_gripper_delta:.4f}")
                 else:
                     # 单臂格式（不太可能，但保留兼容）
                     joints, gripper, success = self.action_to_joint_angles(action, 'left')
@@ -969,6 +1034,59 @@ class RosbagDataReader:
             self.data['gripper_right'][idx],
         )
     
+    def compute_gt_action(self, current_idx, ik_solver_left=None, ik_solver_right=None):
+        """计算 Ground Truth Action (下一帧的 eepose)
+        
+        通过下一帧的关节角度计算 FK 得到下一帧的末端位姿作为 GT action
+        
+        Args:
+            current_idx: 当前帧索引
+            ik_solver_left: 左臂 IK 求解器（用于 FK）
+            ik_solver_right: 右臂 IK 求解器（用于 FK）
+            
+        Returns:
+            gt_action: Ground truth action (14,) [left(7), right(7)]
+                      每个臂: [x, y, z, roll, pitch, yaw, gripper]
+                      如果下一帧不存在返回 None
+        """
+        next_idx = current_idx + 1
+        if next_idx >= len(self.timestamps):
+            return None
+        
+        # 获取下一帧数据
+        arm_left = self.data['arm_left'][next_idx]
+        arm_right = self.data['arm_right'][next_idx]
+        gripper_left = self.data['gripper_left'][next_idx]
+        gripper_right = self.data['gripper_right'][next_idx]
+        
+        gt_action = np.zeros(14, dtype=np.float32)
+        
+        # 计算左臂 eepose
+        if ik_solver_left is not None and arm_left is not None:
+            joint_left = arm_left[:6] if len(arm_left) > 6 else arm_left
+            pos_left, quat_left, _ = ik_solver_left.forward_kinematics(joint_left)
+            r = R.from_quat([quat_left[1], quat_left[2], quat_left[3], quat_left[0]])
+            euler_left = r.as_euler('xyz')
+            
+            gt_action[0:3] = pos_left
+            gt_action[3:6] = euler_left
+            gripper_val = gripper_left[0] / 100.0 if gripper_left is not None and len(gripper_left) > 0 else 0.0
+            gt_action[6] = float(gripper_val)
+        
+        # 计算右臂 eepose
+        if ik_solver_right is not None and arm_right is not None:
+            joint_right = arm_right[:6] if len(arm_right) > 6 else arm_right
+            pos_right, quat_right, _ = ik_solver_right.forward_kinematics(joint_right)
+            r = R.from_quat([quat_right[1], quat_right[2], quat_right[3], quat_right[0]])
+            euler_right = r.as_euler('xyz')
+            
+            gt_action[7:10] = pos_right
+            gt_action[10:13] = euler_right
+            gripper_val = gripper_right[0] / 100.0 if gripper_right is not None and len(gripper_right) > 0 else 0.0
+            gt_action[13] = float(gripper_val)
+        
+        return gt_action
+    
     def get_next_frame(self):
         """获取下一帧数据"""
         frame = self.get_frame(self.current_idx)
@@ -1020,6 +1138,12 @@ def main():
                        help="Only print action results, don't compute IK")
     parser.add_argument("--compute_ik", action="store_true",
                        help="Compute IK from eepose actions")
+    
+    # 分析功能
+    parser.add_argument("--show_joint_delta", action="store_true",
+                       help="Show joint angle delta after IK (requires --compute_ik)")
+    parser.add_argument("--compare_gt_action", action="store_true",
+                       help="Compare predicted action with ground truth (bag mode only)")
     
     args = parser.parse_args()
     
@@ -1087,7 +1211,8 @@ def main():
                     head_rgb, left_rgb, right_rgb,
                     arm_left, arm_right, gripper_left, gripper_right,
                     args.task_prompt,
-                    print_only=not args.compute_ik
+                    print_only=not args.compute_ik,
+                    show_joint_delta=args.show_joint_delta
                 )
         finally:
             zmq_sub.close()
@@ -1095,21 +1220,34 @@ def main():
     elif args.bag_file:
         # 从 rosbag 文件读取数据
         print(f"\n[Main] Running in BAG FILE mode: {args.bag_file}")
+        if args.compare_gt_action:
+            print("[Main] Ground truth comparison ENABLED")
+        if args.show_joint_delta:
+            print("[Main] Joint delta display ENABLED")
         
         if not ROSBAG_AVAILABLE:
             print("[Error] rosbag is not available. Install with: pip install rosbag")
             return
         
         bag_reader = RosbagDataReader(args.bag_file)
-        n_frames = min(args.n_iterations, len(bag_reader))
+        n_frames = min(args.n_iterations, len(bag_reader) - 1)  # 保留最后一帧用于 GT
+        
+        # 统计累计误差
+        total_errors = {
+            'left_pos': [], 'right_pos': [],
+            'left_euler': [], 'right_euler': [],
+            'left_gripper': [], 'right_gripper': []
+        }
         
         for step in range(n_frames):
+            current_idx = step  # 当前帧索引
+            
             print(f"\n{'='*60}")
             print(f"Frame {step + 1}/{n_frames}")
             print("="*60)
             
             # 获取 bag 数据
-            head_rgb, left_rgb, right_rgb, arm_left, arm_right, gripper_left, gripper_right = bag_reader.get_next_frame()
+            head_rgb, left_rgb, right_rgb, arm_left, arm_right, gripper_left, gripper_right = bag_reader.get_frame(current_idx)
             
             if head_rgb is None:
                 print("[Main] No head RGB image, skipping...")
@@ -1121,13 +1259,44 @@ def main():
             if right_rgb is None:
                 right_rgb = np.zeros_like(head_rgb)
             
+            # 计算 Ground Truth action（下一帧的 eepose）
+            gt_action = None
+            if args.compare_gt_action:
+                gt_action = bag_reader.compute_gt_action(current_idx, ik_solver_left, ik_solver_right)
+            
             # 运行推理
             actions = controller.run_single_inference(
                 head_rgb, left_rgb, right_rgb,
                 arm_left, arm_right, gripper_left, gripper_right,
                 args.task_prompt,
-                print_only=(not args.compute_ik)
+                print_only=(not args.compute_ik),
+                show_joint_delta=args.show_joint_delta,
+                gt_action=gt_action,
+                compare_gt=args.compare_gt_action
             )
+            
+            # 收集误差统计
+            if args.compare_gt_action and gt_action is not None and len(actions) > 0:
+                pred_action = actions[0]
+                total_errors['left_pos'].append(np.linalg.norm(pred_action[:3] - gt_action[:3]))
+                total_errors['right_pos'].append(np.linalg.norm(pred_action[7:10] - gt_action[7:10]))
+                total_errors['left_euler'].append(np.linalg.norm(pred_action[3:6] - gt_action[3:6]))
+                total_errors['right_euler'].append(np.linalg.norm(pred_action[10:13] - gt_action[10:13]))
+                total_errors['left_gripper'].append(abs(pred_action[6] - gt_action[6]))
+                total_errors['right_gripper'].append(abs(pred_action[13] - gt_action[13]))
+        
+        # 打印总体统计
+        if args.compare_gt_action and total_errors['left_pos']:
+            print(f"\n{'='*60}")
+            print("Overall Error Statistics")
+            print("="*60)
+            print(f"  Left Position Error:  mean={np.mean(total_errors['left_pos']):.6f}m, std={np.std(total_errors['left_pos']):.6f}m")
+            print(f"  Right Position Error: mean={np.mean(total_errors['right_pos']):.6f}m, std={np.std(total_errors['right_pos']):.6f}m")
+            print(f"  Left Euler Error:     mean={np.mean(total_errors['left_euler']):.6f}rad, std={np.std(total_errors['left_euler']):.6f}rad")
+            print(f"  Right Euler Error:    mean={np.mean(total_errors['right_euler']):.6f}rad, std={np.std(total_errors['right_euler']):.6f}rad")
+            print(f"  Left Gripper Error:   mean={np.mean(total_errors['left_gripper']):.4f}, std={np.std(total_errors['left_gripper']):.4f}")
+            print(f"  Right Gripper Error:  mean={np.mean(total_errors['right_gripper']):.4f}, std={np.std(total_errors['right_gripper']):.4f}")
+            print(f"  Total Position Error: mean={np.mean(total_errors['left_pos']) + np.mean(total_errors['right_pos']):.6f}m")
         
         bag_reader.close()
     

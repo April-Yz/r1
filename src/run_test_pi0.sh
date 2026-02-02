@@ -141,9 +141,73 @@ case ${MODE} in
             --compute_ik
         ;;
     
+    "zmq_ik_delta")
+        echo "Running in ZMQ BRIDGE mode with IK + joint delta..."
+        echo "=============================================="
+        echo "IMPORTANT: First run ros_bridge.py in another terminal:"
+        echo "  /usr/bin/python3 /home/pine/yzj/src/ros_bridge.py"
+        echo "=============================================="
+        python test_pi0_ros.py \
+            --train_config_name ${TRAIN_CONFIG_NAME} \
+            --checkpoint_path ${CHECKPOINT_PATH} \
+            --pi0_step ${PI0_STEP} \
+            --task_prompt "${TASK_PROMPT}" \
+            --n_iterations ${N_ITERATIONS} \
+            --zmq_mode \
+            --compute_ik \
+            --show_joint_delta
+        ;;
+    
+    "bag_compare")
+        if [ -z "${BAG_FILE}" ]; then
+            echo "Error: Please provide bag file path"
+            echo "Usage: ./run_test_pi0.sh bag_compare /path/to/file.bag"
+            exit 1
+        fi
+        echo "Running in BAG FILE mode with GT comparison..."
+        python test_pi0_ros.py \
+            --train_config_name ${TRAIN_CONFIG_NAME} \
+            --checkpoint_path ${CHECKPOINT_PATH} \
+            --pi0_step ${PI0_STEP} \
+            --task_prompt "${TASK_PROMPT}" \
+            --n_iterations ${N_ITERATIONS} \
+            --bag_file "${BAG_FILE}" \
+            --compare_gt_action
+        ;;
+    
+    "bag_full")
+        if [ -z "${BAG_FILE}" ]; then
+            echo "Error: Please provide bag file path"
+            echo "Usage: ./run_test_pi0.sh bag_full /path/to/file.bag"
+            exit 1
+        fi
+        echo "Running in BAG FILE mode with IK + GT comparison + joint delta..."
+        python test_pi0_ros.py \
+            --train_config_name ${TRAIN_CONFIG_NAME} \
+            --checkpoint_path ${CHECKPOINT_PATH} \
+            --pi0_step ${PI0_STEP} \
+            --task_prompt "${TASK_PROMPT}" \
+            --n_iterations ${N_ITERATIONS} \
+            --bag_file "${BAG_FILE}" \
+            --compute_ik \
+            --show_joint_delta \
+            --compare_gt_action
+        ;;
+    
     *)
         echo "Unknown mode: ${MODE}"
-        echo "Usage: ./run_test_pi0.sh [dummy|bag|ros|ros_ik|zmq|zmq_ik] [bag_file_path]"
+        echo "Usage: ./run_test_pi0.sh <mode> [bag_file_path]"
+        echo ""
+        echo "Available modes:"
+        echo "  dummy        - Test model loading with random images"
+        echo "  bag          - Read from rosbag file (print action only)"
+        echo "  bag_compare  - Read from rosbag file + compare with GT action"
+        echo "  bag_full     - Read from rosbag file + IK + GT comparison + joint delta"
+        echo "  ros          - Read from ROS topics (may have Python version issues)"
+        echo "  ros_ik       - Read from ROS topics + IK computation"
+        echo "  zmq          - Read via ZMQ bridge (print action only)"
+        echo "  zmq_ik       - Read via ZMQ bridge + IK computation"
+        echo "  zmq_ik_delta - Read via ZMQ bridge + IK + joint delta"
         exit 1
         ;;
 esac

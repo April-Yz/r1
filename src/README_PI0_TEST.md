@@ -97,6 +97,96 @@ cd /home/pine/yzj/src
 
 ---
 
+## 分析功能
+
+### 功能 1：计算关节角度变化量 (--show_joint_delta)
+
+计算每次 IK 后的关节角度与当前状态的差值，用于分析动作幅度：
+
+```bash
+# 通过 ZMQ 模式，启用 IK + 关节变化量显示
+./run_test_pi0.sh zmq_ik_delta
+```
+
+输出示例：
+```
+[Controller] === Joint Angle Delta (Action 0 vs Current State) ===
+    Left  joint delta:  [ 0.0123 -0.0045  0.0078  0.0012 -0.0034  0.0056]
+    Left  joint |delta|: [0.0123 0.0045 0.0078 0.0012 0.0034 0.0056]
+    Left  joint L2:     0.015423 rad
+    Left  gripper delta: -0.0234
+```
+
+### 功能 2：比较预测与真实动作 (--compare_gt_action)
+
+仅适用于 bag 模式，将模型预测与下一帧的真实 eepose 进行比较：
+
+```bash
+# 比较预测与 Ground Truth（仅打印误差）
+./run_test_pi0.sh bag_compare /path/to/file.bag
+
+# 完整分析：IK + 关节变化量 + GT 比较
+./run_test_pi0.sh bag_full /path/to/file.bag
+```
+
+输出示例：
+```
+[Controller] === Prediction vs Ground Truth Comparison ===
+  Ground Truth Action:
+    Left:  pos=[0.5351 0.1618 1.1634], euler=[-0.4419  0.2169 -1.0968], gripper=0.7528
+    Right: pos=[ 0.5626 -0.1688  1.1251], euler=[0.4595 0.1772 1.2221], gripper=0.9385
+  Errors:
+    Left:  pos_err=0.003421m, euler_err=0.012345rad, gripper_err=0.0123
+    Right: pos_err=0.002156m, euler_err=0.008765rad, gripper_err=0.0089
+    Total: pos_err=0.005577m, euler_err=0.021110rad
+
+============================================================
+Overall Error Statistics
+============================================================
+  Left Position Error:  mean=0.004521m, std=0.001234m
+  Right Position Error: mean=0.003876m, std=0.001567m
+  ...
+```
+
+---
+
+## 完整命令示例
+
+```bash
+# ========== 基本测试 ==========
+# 测试模型加载
+./run_test_pi0.sh dummy
+
+# 从 bag 读取，仅打印 action
+./run_test_pi0.sh bag /home/pine/yzj/pour/r1_data_20260202_172011.bag
+
+# ========== 带 IK 计算 ==========
+# 从 ZMQ 读取，计算 IK 关节角度
+./run_test_pi0.sh zmq_ik
+
+# 从 ZMQ 读取，计算 IK + 显示关节变化量
+./run_test_pi0.sh zmq_ik_delta
+
+# ========== 精度分析 ==========
+# 从 bag 读取，比较预测与真实 action 误差
+./run_test_pi0.sh bag_compare /home/pine/yzj/pour/r1_data_20260202_172011.bag
+
+# 从 bag 读取，完整分析（IK + 关节变化量 + GT 比较）
+./run_test_pi0.sh bag_full /home/pine/yzj/pour/r1_data_20260202_172011.bag
+
+# ========== 直接使用 Python 脚本 ==========
+# 自定义参数
+source /home/pine/yzj/RoboTwin/policy/pi0/.venv/bin/activate
+python test_pi0_ros.py \
+    --bag_file /path/to/file.bag \
+    --n_iterations 50 \
+    --compute_ik \
+    --show_joint_delta \
+    --compare_gt_action
+```
+
+---
+
 ## 详细用法
 
 ### 使用 run_test_pi0.sh 脚本
@@ -105,12 +195,15 @@ cd /home/pine/yzj/src
 ./run_test_pi0.sh <mode> [bag_file]
 
 # mode 可选值:
-#   dummy   - 使用随机图像测试模型加载
-#   bag     - 从 rosbag 文件读取（需要 bag_file 参数）
-#   ros     - 从 ROS topics 直接读取（⚠️ 有兼容性问题）
-#   ros_ik  - 同上 + 计算 IK
-#   zmq     - 通过 ZMQ 桥接读取 ROS 数据（✅ 推荐）
-#   zmq_ik  - 同上 + 计算 IK（✅ 推荐）
+#   dummy        - 使用随机图像测试模型加载
+#   bag          - 从 rosbag 文件读取（仅打印 action）
+#   bag_compare  - 从 rosbag 读取 + 比较 GT action
+#   bag_full     - 从 rosbag 读取 + IK + GT 比较 + 关节变化量
+#   ros          - 从 ROS topics 直接读取（⚠️ 有兼容性问题）
+#   ros_ik       - 同上 + 计算 IK
+#   zmq          - 通过 ZMQ 桥接读取 ROS 数据（✅ 推荐）
+#   zmq_ik       - 同上 + 计算 IK
+#   zmq_ik_delta - 同上 + 计算 IK + 关节变化量
 ```
 
 ### 直接使用 Python 脚本
@@ -152,8 +245,10 @@ python /home/pine/yzj/src/test_pi0_ros.py \
 | `--zmq_port` | `5555` | ZMQ 端口 |
 | `--bag_file` | `None` | Rosbag 文件路径 |
 | `--dummy_mode` | `False` | 使用随机图像测试 |
-| `--print_only` | `True` | 仅打印结果 |
+| `--print_only` | `True` | 仅打印 eepose 结果 |
 | `--compute_ik` | `False` | 计算 IK 输出关节角度 |
+| `--show_joint_delta` | `False` | 显示关节角度变化量（需要 --compute_ik）|
+| `--compare_gt_action` | `False` | 比较预测与真实 action（仅 bag 模式）|
 
 ---
 
