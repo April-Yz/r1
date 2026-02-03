@@ -7,6 +7,9 @@ Output: MP4 Video (Resized to 640x480, 15 FPS)
 Usage:
     Single file: python3 bag2mp4_headcam.py input.bag --output output.mp4
     Batch dir:   python3 bag2mp4_headcam.py /media/pine/新加卷/R1/pour --batch --output ./vis_head/
+
+    python3 bag2mp4_headcam.py /media/pine/Yang/R1/pour_0201 --batch --output ./vis_head_0201/
+    python3 bag2mp4_headcam.py /home/pine/yzj/pour --batch --output ./vis_head_0203/
 """
 
 import rosbag

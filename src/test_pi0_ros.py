@@ -53,6 +53,14 @@ except ImportError:
     print("[Warning] kinpy not available. Install kinpy for IK functionality.")
     KINPY_AVAILABLE = False
 
+# Curobo for high-performance IK
+try:
+    from urdfik import URDFInverseKinematics
+    CUROBO_AVAILABLE = True
+except ImportError:
+    print("[Warning] curobo not available. Install curobo for faster IK.")
+    CUROBO_AVAILABLE = False
+
 # rosbag for reading bag files
 try:
     import rosbag
@@ -174,7 +182,7 @@ class PI0Model:
 
 
 class IKSolver:
-    """逆运动学求解器 - 基于 h52eepose.py 的 FK 逻辑"""
+    """逆运动学求解器 - 基于 Curobo 的高性能实现"""
     
     # URDF 路径
     URDF_PATH = "/home/pine/yzj/R1_urdf/galaxea_sim/assets/r1/robot.urdf"
@@ -182,56 +190,29 @@ class IKSolver:
     # 固定的 torso 值（与 h52eepose.py 保持一致）
     TORSO_FIXED = np.array([0.25, -0.4, -0.85, 0], dtype=np.float32)
     
-    # 运动学链配置
-    CHAIN_CONFIG = {
-        'left': {
-            'root_link': 'base_link',
-            'end_link': 'left_gripper_link',
-            'joint_names': [
-                'torso_joint1', 'torso_joint2', 'torso_joint3', 'torso_joint4',
-                'left_arm_joint1', 'left_arm_joint2', 'left_arm_joint3', 
-                'left_arm_joint4', 'left_arm_joint5', 'left_arm_joint6',
-            ]
-        },
-        'right': {
-            'root_link': 'base_link',
-            'end_link': 'right_gripper_link',
-            'joint_names': [
-                'torso_joint1', 'torso_joint2', 'torso_joint3', 'torso_joint4',
-                'right_arm_joint1', 'right_arm_joint2', 'right_arm_joint3', 
-                'right_arm_joint4', 'right_arm_joint5', 'right_arm_joint6',
-            ]
-        }
-    }
-    
     def __init__(self, side='left'):
         """初始化 IK 求解器
         
         Args:
             side: 'left' 或 'right'，指定左臂或右臂
         """
-        if not KINPY_AVAILABLE:
-            raise RuntimeError("kinpy is not available. Please install it.")
+        if not CUROBO_AVAILABLE:
+            raise RuntimeError("curobo is not available. Please install curobo.")
         
         self.side = side
         
-        # 加载 URDF
+        # Curobo solver
         try:
-            with open(self.URDF_PATH, 'rb') as f:
-                urdf_data = f.read()
-        except FileNotFoundError:
-            raise FileNotFoundError(f"URDF file not found at {self.URDF_PATH}")
-        
-        # 构建运动学链
-        cfg = self.CHAIN_CONFIG[side]
-        self.chain = kp.build_serial_chain_from_urdf(
-            urdf_data, 
-            cfg['end_link'], 
-            cfg['root_link']
-        )
-        self.joint_names = cfg['joint_names']
-        
-        print(f"[IKSolver] Initialized for {side} arm with {len(self.joint_names)} joints")
+            ee_link = 'left_gripper_link' if side == 'left' else 'right_gripper_link'
+            self.curobo_solver = URDFInverseKinematics(
+                urdf_file=self.URDF_PATH,
+                base_link='base_link',
+                ee_link=ee_link
+            )
+            print(f"[IKSolver] Initialized Curobo solver for {side} arm")
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize Curobo solver: {e}")
+    
     
     def forward_kinematics(self, joint_angles):
         """正运动学：从关节角度计算末端位置和姿态
@@ -247,18 +228,8 @@ class IKSolver:
         # 拼接 torso 和 arm 关节角度
         joint_angles_full = np.concatenate([self.TORSO_FIXED, joint_angles])
         
-        # 构建关节字典
-        th = dict(zip(self.joint_names, joint_angles_full))
-        
-        # 计算正运动学
-        transform = self.chain.forward_kinematics(th)
-        
-        pos = transform.pos
-        quat = transform.rot  # kinpy returns [w, x, y, z]
-        
-        # 计算欧拉角 (scipy使用 [x,y,z,w] 格式)
-        r = R.from_quat([quat[1], quat[2], quat[3], quat[0]])
-        euler = r.as_euler('zyx')
+        # 使用 Curobo FK
+        pos, quat, euler = self.curobo_solver.forward_kinematics(joint_angles_full)
         
         return pos, quat, euler
     
@@ -270,88 +241,69 @@ class IKSolver:
             target_pos: 目标位置 [x, y, z]
             target_euler: 目标欧拉角 [roll, pitch, yaw]，可选（zyx顺序）
             initial_guess: 初始关节角度猜测（6个），如果为 None 则使用零位
-            max_iterations: 最大迭代次数
-            tolerance: 收敛容差（位置误差，单位：米）
+            max_iterations: 最大迭代次数 (unused for Curobo)
+            tolerance: 收敛容差（位置误差，单位：米）(unused for Curobo)
             
         Returns:
             joint_angles: 6个手臂关节角度
             success: 是否成功求解
         """
-        # 初始猜测 - 使用当前关节角度可以大大提高收敛速度
-        if initial_guess is None:
-            x0 = np.zeros(6)
-        else:
-            x0 = np.array(initial_guess).copy()
+        if target_euler is None:
+            print(f"[IKSolver] Warning: target_euler is None, IK may not work properly")
+            return np.zeros(6), False
         
-        target_pos = np.array(target_pos)
-        target_euler = np.array(target_euler) if target_euler is not None else None
-        
-        # 定义优化目标函数 - 位置误差 + 姿态误差
-        def objective(joint_angles):
-            pos, quat, euler = self.forward_kinematics(joint_angles)
-            pos_error = np.linalg.norm(pos - target_pos)
+        try:
+            # 将欧拉角转换为四元数 (Curobo 需要 quaternion)
+            r = R.from_euler('zyx', target_euler)
+            quat_xyzw = r.as_quat()  # scipy 返回 [x, y, z, w]
+            quat_wxyz = np.array([quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]])
             
-            if target_euler is not None:
-                # 计算欧拉角误差，考虑角度周期性
-                euler_diff = euler - target_euler
-                # 将角度差归一化到 [-pi, pi]
-                euler_diff = np.arctan2(np.sin(euler_diff), np.cos(euler_diff))
-                euler_error = np.linalg.norm(euler_diff)
-                # 位置误差权重 1.0，姿态误差权重 0.5
-                return pos_error + 0.5 * euler_error
+            # 准备完整的关节角度（包括 torso）
+            if initial_guess is not None:
+                current_joints_full = np.concatenate([self.TORSO_FIXED, initial_guess])
             else:
-                return pos_error
-        
-        # 关节限制（根据机器人实际关节限制设置）
-        bounds = [
-            (-2.879, 2.879),   # joint1
-            (-1.571, 2.094),   # joint2
-            (-2.879, 2.879),   # joint3
-            (-1.919, 2.618),   # joint4
-            (-2.879, 2.879),   # joint5
-            (-1.919, 2.618),   # joint6
-        ]
-        
-        # 使用多次尝试的策略，如果初始猜测不好则尝试其他初始值
-        best_result = None
-        best_error = float('inf')
-        
-        # 第一次尝试：使用提供的初始猜测
-        result = minimize(
-            objective, 
-            x0, 
-            method='L-BFGS-B',
-            bounds=bounds,
-            # options={'maxiter': max_iterations, 'ftol': 1e-8, 'gtol': 1e-6}
-            options={'maxiter': max_iterations, 'ftol': 1e-4, 'gtol': 1e-4}
-        )
-        
-        if result.fun < best_error:
-            best_error = result.fun
-            best_result = result
-        
-        # 如果第一次没收敛好，尝试其他初始值
-        if best_error > tolerance:
-            # 尝试零位
-            result2 = minimize(
-                objective, 
-                np.zeros(6), 
-                method='L-BFGS-B',
-                bounds=bounds,
-                # options={'maxiter': max_iterations, 'ftol': 1e-8, 'gtol': 1e-6}
-                options={'maxiter': max_iterations, 'ftol': 1e-4, 'gtol': 1e-4}
+                current_joints_full = None
+            
+            # 调用 Curobo IK
+            result = self.curobo_solver.solve_ik(
+                target_position=target_pos,
+                target_orientation=quat_wxyz,
+                current_joints=current_joints_full
             )
-            if result2.fun < best_error:
-                best_error = result2.fun
-                best_result = result2
-        
-        # 判断成功：位置误差小于容差（单位：米）
-        success = best_error < tolerance
-        
-        if not success:
-            print(f"[IKSolver] Warning: IK did not converge well. Error: {best_error:.6f}")
-        
-        return best_result.x, success
+            
+            if result is not None and result.success.cpu().numpy().all():
+                # 提取关节角度
+                solution_raw = result.solution.cpu().numpy()
+                print(f"[IKSolver] DEBUG: solution_raw shape = {solution_raw.shape}")
+                
+                # Curobo 返回 [batch_size, num_joints]
+                if solution_raw.shape[0] == 0:
+                    print(f"[IKSolver] Error: Empty solution returned")
+                    return np.zeros(6), False
+                
+                joint_angles_full = solution_raw[0]  # 取第一个 batch
+                print(f"[IKSolver] DEBUG: joint_angles_full shape = {joint_angles_full.shape}, value = {joint_angles_full}")
+                
+                # 确保至少有 4 个关节（torso）
+                if len(joint_angles_full) < 4:
+                    print(f"[IKSolver] Error: Expected at least 4 joints (torso), got {len(joint_angles_full)}")
+                    return np.zeros(6), False
+                
+                joint_angles = joint_angles_full[4:]  # 只返回手臂关节（跳过 torso）
+                print(f"[IKSolver] DEBUG: joint_angles (arm only) shape = {joint_angles.shape}")
+                
+                # 如果手臂关节不足 6 个，返回失败
+                if len(joint_angles) < 6:
+                    print(f"[IKSolver] Error: Expected 6 arm joints, got {len(joint_angles)}")
+                    return np.zeros(6), False
+                
+                return joint_angles[:6], True  # 确保只返回前 6 个手臂关节
+            else:
+                print(f"[IKSolver] Curobo IK failed")
+                return np.zeros(6), False
+        except Exception as e:
+            print(f"[IKSolver] Curobo IK error: {e}")
+            return np.zeros(6), False
 
 
 class ROSDataSubscriber:
@@ -1111,8 +1063,19 @@ class ZMQCommandPublisher:
 class RosbagDataReader:
     """从 rosbag 文件读取数据（不需要 ROS 运行时）"""
     
-    # Topic 名称（与 bag2h5x_yzj_speed.py 保持一致）
-    TOPICS = {
+    # Topic 名称 - 优先使用原始高频topic
+    TOPICS_PRIMARY = {
+        'head_rgb': '/hdas/camera_head/rgb/image_rect_color/compressed',
+        'left_rgb': '/left/camera/color/image_raw/compressed',
+        'right_rgb': '/right/camera/color/image_raw/compressed',
+        'arm_left': '/hdas/feedback_arm_left',
+        'arm_right': '/hdas/feedback_arm_right',
+        'gripper_left': '/hdas/feedback_gripper_left',
+        'gripper_right': '/hdas/feedback_gripper_right',
+    }
+    
+    # 降频topic作为fallback
+    TOPICS_FALLBACK = {
         'head_rgb': '/hdas/camera_head/rgb/image_rect_color/compressed',
         'left_rgb': '/left/camera/color/image_raw/compressed',
         'right_rgb': '/right/camera/color/image_raw/compressed',
@@ -1135,6 +1098,30 @@ class RosbagDataReader:
         print(f"[RosbagReader] Opening bag file: {bag_path}")
         
         self.bag = rosbag.Bag(bag_path, 'r')
+        
+        # 检测bag中可用的topics并选择使用哪套
+        available_topics = self.bag.get_type_and_topic_info()[1].keys()
+        print(f"\n[BagReader] Detecting topics in bag...")
+        
+        # 检查是否有原始高频topics（关键是关节和夹爪数据）
+        use_primary = all(topic in available_topics for topic in [
+            self.TOPICS_PRIMARY['arm_left'],
+            self.TOPICS_PRIMARY['arm_right'],
+            self.TOPICS_PRIMARY['gripper_left'],
+            self.TOPICS_PRIMARY['gripper_right']
+        ])
+        
+        if use_primary:
+            self.TOPICS = self.TOPICS_PRIMARY.copy()
+            print(f"[BagReader] ✓ Using PRIMARY (high freq) topics for better performance")
+        else:
+            self.TOPICS = self.TOPICS_FALLBACK.copy()
+            print(f"[BagReader] Using FALLBACK (low freq) topics")
+        
+        print(f"[BagReader] Selected topics:")
+        for key, topic in self.TOPICS.items():
+            status = "✓" if topic in available_topics else "✗"
+            print(f"    {status} {key}: {topic}")
         
         # 获取所有消息并按时间排序
         self._load_data()
@@ -1404,14 +1391,15 @@ def main():
     is_bag_mode = args.bag_file is not None
     is_zmq_mode = args.zmq_mode
     need_ik = args.compute_ik or is_bag_mode or is_zmq_mode  # bag/zmq 模式总是需要 FK
-    if need_ik and KINPY_AVAILABLE:
-        print("\nInitializing IK Solvers...")
+    if need_ik and CUROBO_AVAILABLE:
+        print("\nInitializing Curobo IK Solvers...")
         ik_solver_left = IKSolver(side='left')
         ik_solver_right = IKSolver(side='right')
-    elif need_ik and not KINPY_AVAILABLE:
-        print("\n[Warning] kinpy not available, FK/IK will not work!")
+    elif need_ik and not CUROBO_AVAILABLE:
+        print("\n[Error] curobo not available, FK/IK will not work!")
         print("         State will be zeros, which may affect model output.")
-        print("         Install kinpy with: pip install kinpy")
+        print("         Install curobo: https://github.com/NVlabs/curobo")
+        return
     
     # 初始化控制器
     controller = PI0TestController(model, ik_solver_left, ik_solver_right)
@@ -1584,6 +1572,9 @@ def main():
                         # IK 求解
                         left_joints, left_gripper_raw, right_joints, right_gripper_raw, success = \
                             controller.action_to_robot_command(action)
+                        
+                        print(f"[DEBUG] Action {action_idx}: left_joints type={type(left_joints)}, shape={np.array(left_joints).shape if left_joints is not None else 'None'}")
+                        print(f"[DEBUG] Action {action_idx}: right_joints type={type(right_joints)}, shape={np.array(right_joints).shape if right_joints is not None else 'None'}")
                         
                         left_ok, right_ok = success[0], success[1]
                         left_valid, right_valid = True, True

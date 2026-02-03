@@ -45,8 +45,19 @@ except ImportError:
 class ROSBridge:
     """ROS 数据桥接器，双向通信"""
     
-    # 读取数据的 topics (带 _low 后缀用于低频记录)
-    READ_TOPICS = {
+    # 优先读取原始高频topic，如果不存在则fallback到降频topic
+    READ_TOPICS_PRIMARY = {
+        'head_rgb': '/hdas/camera_head/rgb/image_rect_color/compressed',
+        'left_rgb': '/left/camera/color/image_raw/compressed',
+        'right_rgb': '/right/camera/color/image_raw/compressed',
+        'arm_left': '/hdas/feedback_arm_left',
+        'arm_right': '/hdas/feedback_arm_right',
+        'gripper_left': '/hdas/feedback_gripper_left',
+        'gripper_right': '/hdas/feedback_gripper_right',
+    }
+    
+    # 降频topic作为fallback（当录bag时使用throttle节点时）
+    READ_TOPICS_FALLBACK = {
         'head_rgb': '/hdas/camera_head/rgb/image_rect_color/compressed',
         'left_rgb': '/left/camera/color/image_raw/compressed',
         'right_rgb': '/right/camera/color/image_raw/compressed',
@@ -64,7 +75,10 @@ class ROSBridge:
         'gripper_right': '/motion_control/position_control_gripper_right',
     }
     
-    def __init__(self, data_port=5555, cmd_port=5556):
+    def __init__(self, data_port=5555, cmd_port=5556, use_fallback=False):
+        # 选择使用原始topic还是降频topic
+        self.READ_TOPICS = self.READ_TOPICS_FALLBACK if use_fallback else self.READ_TOPICS_PRIMARY
+        
         # ZMQ 设置 - 数据发布
         self.context = zmq.Context()
         self.data_socket = self.context.socket(zmq.PUB)
@@ -90,7 +104,8 @@ class ROSBridge:
         rospy.init_node('ros_bridge_node', anonymous=True)
         
         # 订阅读取话题
-        print("[ROSBridge] Subscribing to read topics...")
+        topic_mode = "fallback (low freq)" if use_fallback else "primary (high freq)"
+        print(f"[ROSBridge] Subscribing to read topics ({topic_mode})...")
         rospy.Subscriber(self.READ_TOPICS['head_rgb'], CompressedImage, 
                         lambda msg: self._image_callback(msg, 'head_rgb'))
         rospy.Subscriber(self.READ_TOPICS['left_rgb'], CompressedImage,
@@ -118,6 +133,7 @@ class ROSBridge:
             self.CONTROL_TOPICS['gripper_right'], JointState, queue_size=1)
         
         print("[ROSBridge] Ready! Waiting for data...")
+
     
     def _image_callback(self, msg, key):
         """处理图像消息"""
@@ -284,12 +300,16 @@ if __name__ == "__main__":
     parser.add_argument("--data_port", type=int, default=5555, help="ZMQ data port")
     parser.add_argument("--cmd_port", type=int, default=5556, help="ZMQ command port")
     parser.add_argument("--rate", type=int, default=15, help="Publishing rate (Hz)")
+    parser.add_argument("--use_fallback", action="store_true", 
+                       help="Use fallback (low freq) topics instead of primary")
     args = parser.parse_args()
     
     try:
-        bridge = ROSBridge(data_port=args.data_port, cmd_port=args.cmd_port)
+        bridge = ROSBridge(data_port=args.data_port, cmd_port=args.cmd_port, 
+                          use_fallback=args.use_fallback)
         bridge.run(rate_hz=args.rate)
     except rospy.ROSInterruptException:
         pass
     except KeyboardInterrupt:
         print("\n[ROSBridge] Shutting down...")
+
