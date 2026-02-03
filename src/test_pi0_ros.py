@@ -322,7 +322,8 @@ class IKSolver:
             x0, 
             method='L-BFGS-B',
             bounds=bounds,
-            options={'maxiter': max_iterations, 'ftol': 1e-8, 'gtol': 1e-6}
+            # options={'maxiter': max_iterations, 'ftol': 1e-8, 'gtol': 1e-6}
+            options={'maxiter': max_iterations, 'ftol': 1e-4, 'gtol': 1e-4}
         )
         
         if result.fun < best_error:
@@ -337,7 +338,8 @@ class IKSolver:
                 np.zeros(6), 
                 method='L-BFGS-B',
                 bounds=bounds,
-                options={'maxiter': max_iterations, 'ftol': 1e-8, 'gtol': 1e-6}
+                # options={'maxiter': max_iterations, 'ftol': 1e-8, 'gtol': 1e-6}
+                options={'maxiter': max_iterations, 'ftol': 1e-4, 'gtol': 1e-4}
             )
             if result2.fun < best_error:
                 best_error = result2.fun
@@ -1377,6 +1379,12 @@ def main():
                        help="Initialize robot to starting position before control")
     parser.add_argument("--confirm_each_command", action="store_true",
                        help="Require ENTER confirmation before sending each batch of control commands")
+    parser.add_argument("--auto_execute_threshold", type=float, default=None,
+                       help="Auto execute if max delta_action < threshold (e.g., 0.05)")
+    parser.add_argument("--auto_joint_threshold", type=float, default=None,
+                       help="Auto execute if max delta_joint < threshold (e.g., 0.2)")
+    parser.add_argument("--execution_delay", type=float, default=1.0,
+                       help="Delay in seconds after sending commands to allow robot to execute (default: 1.0)")
     
     args = parser.parse_args()
     
@@ -1526,8 +1534,9 @@ def main():
                     # 尝试从上次发送的命令获取回退值
                     if hasattr(cmd_pub, '_last_left_joints') and cmd_pub._last_left_joints is not None:
                         last_good_left_joints = cmd_pub._last_left_joints
-                        last_good_right_joints = cmd_pub._last_right_joints
                         last_good_left_gripper = getattr(cmd_pub, '_last_left_gripper', 50.0)
+                    if hasattr(cmd_pub, '_last_right_joints') and cmd_pub._last_right_joints is not None:
+                        last_good_right_joints = cmd_pub._last_right_joints
                         last_good_right_gripper = getattr(cmd_pub, '_last_right_gripper', 50.0)
                     
                     for action_idx in range(execute_steps):
@@ -1536,29 +1545,36 @@ def main():
                             controller.action_to_robot_command(action)
                         
                         left_ok, right_ok = success[0], success[1]
+                        left_valid, right_valid = True, True
                         
-                        # 处理 IK 失败的情况 - 用上一帧的值代替
+                        # 处理左手 IK 失败 - 用左手上一次成功的值代替
                         if not left_ok:
                             if last_good_left_joints is not None:
-                                print(f"[IK] ⚠️ Action {action_idx}: Left IK failed, using previous value")
+                                print(f"[IK] ⚠️ Action {action_idx}: Left IK failed, using left's previous value")
                                 left_joints = last_good_left_joints
                                 left_gripper_raw = last_good_left_gripper
                                 ik_fail_count += 1
                             else:
-                                print(f"[IK] ❌ Action {action_idx}: Left IK failed, no fallback available!")
-                                continue  # 跳过这个动作
+                                print(f"[IK] ❌ Action {action_idx}: Left IK failed, no left fallback available!")
+                                left_valid = False
                         
+                        # 处理右手 IK 失败 - 用右手上一次成功的值代替
                         if not right_ok:
                             if last_good_right_joints is not None:
-                                print(f"[IK] ⚠️ Action {action_idx}: Right IK failed, using previous value")
+                                print(f"[IK] ⚠️ Action {action_idx}: Right IK failed, using right's previous value")
                                 right_joints = last_good_right_joints
                                 right_gripper_raw = last_good_right_gripper
                                 ik_fail_count += 1
                             else:
-                                print(f"[IK] ❌ Action {action_idx}: Right IK failed, no fallback available!")
-                                continue  # 跳过这个动作
+                                print(f"[IK] ❌ Action {action_idx}: Right IK failed, no right fallback available!")
+                                right_valid = False
                         
-                        # 保存成功的值作为下一帧的回退
+                        # 只有当两边都无效时才跳过
+                        if not left_valid and not right_valid:
+                            print(f"[IK] ❌ Action {action_idx}: Both arms failed with no fallback, skipping!")
+                            continue
+                        
+                        # 保存成功的值作为下一帧的回退（左右分开保存）
                         if left_ok:
                             last_good_left_joints = left_joints
                             last_good_left_gripper = left_gripper_raw
@@ -1598,38 +1614,133 @@ def main():
                             gr_val = gripper_right[0] if hasattr(gripper_right, '__len__') else gripper_right
                             print(f"    Right gripper:     {gr_val:.2f} (0-100)")
                         
-                        # 显示第一个和最后一个动作的目标
-                        first_cmd = all_commands[0]
-                        last_cmd = all_commands[-1]
+                        # ============================================
+                        # 计算当前状态的 eepose (通过 FK)
+                        # ============================================
+                        current_state_action = None
+                        if arm_left is not None and arm_right is not None:
+                            # 使用 controller 的 compute_state_vector 获取当前 eepose
+                            # compute_state_vector 期望原始 gripper 值（可以是 0-100 或 0-1，它会自动处理）
+                            # 但是为了避免 len() 错误，直接传入 gripper 数组
+                            current_state_full = controller.compute_state_vector(
+                                arm_left, arm_right, gripper_left, gripper_right
+                            )
+                            # 提取前 14 维 [left(7), right(7)]
+                            current_state_action = current_state_full[:14]
                         
-                        print(f"\n🎯 ACTION {first_cmd['action_idx']} TARGET (first):")
-                        print(f"    Left  arm joints:  {list(first_cmd['left_joints'])}")
-                        print(f"    Right arm joints:  {list(first_cmd['right_joints'])}")
-                        print(f"    Left  gripper:     {first_cmd['left_gripper_raw']:.2f}")
-                        print(f"    Right gripper:     {first_cmd['right_gripper_raw']:.2f}")
-                        print(f"    IK status:         L={'✅' if first_cmd['left_ik_ok'] else '⚠️fallback'} R={'✅' if first_cmd['right_ik_ok'] else '⚠️fallback'}")
+                        # ============================================
+                        # 显示每个动作的 delta action 和 delta joints
+                        # ============================================
+                        print(f"\n📋 ACTION DETAILS (delta from previous):")
+                        print("-"*60)
                         
-                        print(f"\n🎯 ACTION {last_cmd['action_idx']} TARGET (last):")
-                        print(f"    Left  arm joints:  {list(last_cmd['left_joints'])}")
-                        print(f"    Right arm joints:  {list(last_cmd['right_joints'])}")
-                        print(f"    Left  gripper:     {last_cmd['left_gripper_raw']:.2f}")
-                        print(f"    Right gripper:     {last_cmd['right_gripper_raw']:.2f}")
-                        print(f"    IK status:         L={'✅' if last_cmd['left_ik_ok'] else '⚠️fallback'} R={'✅' if last_cmd['right_ik_ok'] else '⚠️fallback'}")
+                        # 用于计算最大变化量
+                        max_action_delta = 0.0
+                        max_action_delta_idx = 0
+                        max_joint_delta_left = 0.0
+                        max_joint_delta_right = 0.0
+                        max_joint_delta_idx = 0
+                        
+                        # 获取当前状态作为第一个动作的参考
+                        prev_action = current_state_action  # 使用当前 FK 状态作为 action 0 的参考
+                        prev_left_joints = np.array(arm_left[:6]) if arm_left is not None else None
+                        prev_right_joints = np.array(arm_right[:6]) if arm_right is not None else None
+                        
+                        for i, cmd in enumerate(all_commands):
+                            action = cmd['action']
+                            left_joints = np.array(cmd['left_joints'])
+                            right_joints = np.array(cmd['right_joints'])
+                            
+                            # 计算 delta action（与前一个 action 的差值）
+                            if prev_action is not None:
+                                delta_action = action - prev_action
+                                delta_action_norm = np.linalg.norm(delta_action)
+                            else:
+                                # 如果无法获取当前状态，就用 action 本身
+                                delta_action = action
+                                delta_action_norm = np.linalg.norm(delta_action)
+                            
+                            # 计算 delta joints（与前一帧关节角的差值）
+                            if prev_left_joints is not None:
+                                delta_left_joints = left_joints - prev_left_joints
+                                delta_left_norm = np.linalg.norm(delta_left_joints)
+                            else:
+                                delta_left_joints = np.zeros(6)
+                                delta_left_norm = 0.0
+                            
+                            if prev_right_joints is not None:
+                                delta_right_joints = right_joints - prev_right_joints
+                                delta_right_norm = np.linalg.norm(delta_right_joints)
+                            else:
+                                delta_right_joints = np.zeros(6)
+                                delta_right_norm = 0.0
+                            
+                            # 更新最大值
+                            if delta_action_norm > max_action_delta:
+                                max_action_delta = delta_action_norm
+                                max_action_delta_idx = i
+                            if delta_left_norm > max_joint_delta_left:
+                                max_joint_delta_left = delta_left_norm
+                                max_joint_delta_idx = i
+                            if delta_right_norm > max_joint_delta_right:
+                                max_joint_delta_right = delta_right_norm
+                            
+                            # IK 状态标记
+                            ik_status = ""
+                            if not cmd['left_ik_ok'] or not cmd['right_ik_ok']:
+                                ik_status = " ⚠️"
+                            
+                            # 输出每个动作的值和 delta
+                            # action 格式: [left(7), right(7)] = [x,y,z,roll,pitch,yaw,gripper] x2
+                            left_action = action[:7]
+                            right_action = action[7:]
+                            print(f"  Action {i}{ik_status}:")
+                            print(f"    Action L (7d):     [{', '.join([f'{x:.4f}' for x in left_action])}]")
+                            print(f"    Action R (7d):     [{', '.join([f'{x:.4f}' for x in right_action])}]")
+                            print(f"    Δ action (L2):     {delta_action_norm:.6f}")
+                            print(f"    Δ action (14d):    [{', '.join([f'{x:.4f}' for x in delta_action])}]")
+                            print(f"    Δ joints L (L2):   {delta_left_norm:.6f} rad")
+                            print(f"    Δ joints R (L2):   {delta_right_norm:.6f} rad")
+                            
+                            # 更新前一帧
+                            prev_action = action
+                            prev_left_joints = left_joints
+                            prev_right_joints = right_joints
+                        
+                        # ============================================
+                        # 显示最大变化量汇总
+                        # ============================================
+                        print(f"\n🔥 MAX CHANGES SUMMARY:")
+                        print("-"*60)
+                        print(f"    Max Δ action:      {max_action_delta:.6f} (Action {max_action_delta_idx})")
+                        print(f"    Max Δ joints L:    {max_joint_delta_left:.6f} rad (Action {max_joint_delta_idx})")
+                        print(f"    Max Δ joints R:    {max_joint_delta_right:.6f} rad")
                         
                         # 计算总体 delta（从当前到最后一个动作）
+                        first_cmd = all_commands[0]
+                        last_cmd = all_commands[-1]
                         if arm_left is not None and arm_right is not None:
                             total_left_delta = np.array(last_cmd['left_joints']) - np.array(arm_left[:6])
                             total_right_delta = np.array(last_cmd['right_joints']) - np.array(arm_right[:6])
                             
                             print(f"\n📊 TOTAL DELTA (current → last action):")
-                            print(f"    Left  delta:       {total_left_delta}")
                             print(f"    Left  L2 norm:     {np.linalg.norm(total_left_delta):.6f} rad")
-                            print(f"    Right delta:       {total_right_delta}")
                             print(f"    Right L2 norm:     {np.linalg.norm(total_right_delta):.6f} rad")
                         
-                        # 如果启用了确认模式，等待用户确认
+                        # 判断是否自动执行
                         should_send = True
-                        if args.confirm_each_command:
+                        auto_execute = False
+                        
+                        if args.auto_execute_threshold is not None and args.auto_joint_threshold is not None:
+                            # 检查是否满足自动执行条件
+                            max_joint_delta = max(max_joint_delta_left, max_joint_delta_right)
+                            if max_action_delta < args.auto_execute_threshold and max_joint_delta < args.auto_joint_threshold:
+                                auto_execute = True
+                                print(f"\n✅ AUTO EXECUTE: delta_action={max_action_delta:.6f} < {args.auto_execute_threshold}, "
+                                      f"delta_joint={max_joint_delta:.6f} < {args.auto_joint_threshold}")
+                        
+                        # 如果启用了确认模式且不满足自动执行条件，等待用户确认
+                        if args.confirm_each_command and not auto_execute:
                             print(f"\n" + "-"*60)
                             print(f"⚠️  CONFIRM: Execute {len(all_commands)} actions?")
                             user_input = input("Press ENTER to EXECUTE ALL, or type 'skip' to skip: ").strip().lower()
@@ -1640,7 +1751,10 @@ def main():
                         
                         if should_send:
                             # 批量执行所有动作
-                            print(f"\n🚀 Executing {len(all_commands)} actions...")
+                            if auto_execute:
+                                print(f"\n🚀 Auto executing {len(all_commands)} actions...")
+                            else:
+                                print(f"\n🚀 Executing {len(all_commands)} actions...")
                             for i, cmd in enumerate(all_commands):
                                 cmd_pub.send_command(
                                     left_joints=cmd['left_joints'],
@@ -1657,6 +1771,12 @@ def main():
                             print(f"[Main] ✅ All {len(all_commands)} commands SENT to robot!")
                             if ik_fail_count > 0:
                                 print(f"[Main] ⚠️ {ik_fail_count} IK failures were replaced with fallback values")
+                            
+                            # 等待机器人执行完动作
+                            if args.execution_delay > 0:
+                                print(f"[Main] ⏳ Waiting {args.execution_delay}s for robot to execute actions...")
+                                time.sleep(args.execution_delay)
+                                print(f"[Main] ✅ Execution delay complete, ready for next prediction")
                             
                             # 保存最后一个成功的命令用于下次回退
                             # 找最后一个 IK 成功的命令

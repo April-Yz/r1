@@ -34,8 +34,9 @@ cd /home/pine/yzj/src
 # 模型配置
 TRAIN_CONFIG_NAME="R1_FFT_pour_35_0130_5k"
 CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/10000"
-PI0_STEP=10
-EXECUTE_STEPS=10  # 每次预测后执行多少步（应 <= PI0_STEP）
+PI0_STEP=6
+EXECUTE_STEPS=5  # 每次预测后执行多少步（应 <= PI0_STEP）
+EXECUTION_DELAY=0.1  # 执行完动作后等待多少秒再进行下一次预测
 TASK_PROMPT="pour"
 N_ITERATIONS=10
 
@@ -219,6 +220,7 @@ case ${MODE} in
             --checkpoint_path ${CHECKPOINT_PATH} \
             --pi0_step ${PI0_STEP} \
             --execute_steps ${EXECUTE_STEPS} \
+            --execution_delay ${EXECUTION_DELAY} \
             --task_prompt "${TASK_PROMPT}" \
             --n_iterations 999999 \
             --zmq_mode \
@@ -255,6 +257,7 @@ case ${MODE} in
             --checkpoint_path ${CHECKPOINT_PATH} \
             --pi0_step ${PI0_STEP} \
             --execute_steps ${EXECUTE_STEPS} \
+            --execution_delay ${EXECUTION_DELAY} \
             --task_prompt "${TASK_PROMPT}" \
             --n_iterations 999999 \
             --zmq_mode \
@@ -262,6 +265,47 @@ case ${MODE} in
             --publish_command \
             --show_joint_delta \
             --confirm_each_command
+        ;;
+    
+    "zmq_control_auto")
+        echo "=============================================="
+        echo "⚠️  WARNING: CONTROL MODE (AUTO EXECUTE)"
+        echo "=============================================="
+        echo "IMPORTANT: First run ros_bridge.py in another terminal:"
+        echo "  /usr/bin/python3 /home/pine/yzj/src/ros_bridge.py"
+        echo ""
+        echo "Prediction: ${PI0_STEP} steps, Execute: ${EXECUTE_STEPS} steps"
+        echo ""
+        echo "This mode will:"
+        echo "  1. Send init position → wait for 'yes' to start"
+        echo "  2. Execute ${EXECUTE_STEPS} actions per prediction"
+        echo "  3. AUTO EXECUTE if delta_action < 0.05 AND delta_joint < 0.2"
+        echo "  4. Otherwise ask for ENTER confirmation"
+        echo ""
+        echo "Control topics:"
+        echo "  /motion_target/target_joint_state_arm_left"
+        echo "  /motion_target/target_joint_state_arm_right"
+        echo "  /motion_control/position_control_gripper_left"
+        echo "  /motion_control/position_control_gripper_right"
+        echo ""
+        echo "NOTE: Will run continuously until Ctrl+C"
+        echo "=============================================="
+        read -p "Press Enter to continue or Ctrl+C to cancel..."
+        python test_pi0_ros.py \
+            --train_config_name ${TRAIN_CONFIG_NAME} \
+            --checkpoint_path ${CHECKPOINT_PATH} \
+            --pi0_step ${PI0_STEP} \
+            --execute_steps ${EXECUTE_STEPS} \
+            --execution_delay ${EXECUTION_DELAY} \
+            --task_prompt "${TASK_PROMPT}" \
+            --n_iterations 999999 \
+            --zmq_mode \
+            --compute_ik \
+            --publish_command \
+            --show_joint_delta \
+            --confirm_each_command \
+            --auto_execute_threshold 0.08 \
+            --auto_joint_threshold 0.2
         ;;
     
     *)
@@ -280,6 +324,7 @@ case ${MODE} in
         echo "  zmq_ik_delta        - Read via ZMQ bridge + IK + joint delta"
         echo "  zmq_control         - ⚠️ CONTROL MODE: Send commands to robot via ZMQ"
         echo "  zmq_control_confirm - ⚠️ CONTROL MODE: Confirm before each command"
+        echo "  zmq_control_auto    - ⚠️ CONTROL MODE: Auto execute if delta < threshold"
         exit 1
         ;;
 esac
