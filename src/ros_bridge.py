@@ -179,10 +179,10 @@ class ROSBridge:
         
         命令格式:
         {
-            'arm_left': [j1, j2, j3, j4, j5, j6],   # 6 个关节角度 (rad)
-            'arm_right': [j1, j2, j3, j4, j5, j6],
-            'gripper_left': float,   # 0-100
-            'gripper_right': float,  # 0-100
+            'arm_left': [j1, j2, j3, j4, j5, j6, gripper_invalid],  # 7 维: 6关节 + 无效夹爪占位(-2.7)
+            'arm_right': [j1, j2, j3, j4, j5, j6, gripper_invalid], # 7 维: 6关节 + 无效夹爪占位(-2.7)
+            'gripper_left': float,   # 0-100，真正的夹爪控制
+            'gripper_right': float,  # 0-100，真正的夹爪控制
         }
         """
         try:

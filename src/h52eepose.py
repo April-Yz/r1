@@ -9,10 +9,11 @@ from tqdm import tqdm
 
 # # 或者处理整个文件夹
 # python3 h52eepose.py /home/pine/yzj/h5out
+# python3 h52eepose.py /data3/zjyang/real_r1/home/pine/yzj/pour/h5
 
 # --- 1. URDF 路径 ---
 # 请确保该文件在当前目录下，或者修改为绝对路径
-URDF_PATH = "/home/pine/yzj/R1_urdf/galaxea_sim/assets/r1/robot.urdf" 
+URDF_PATH = "/data4/zjyang/program/RoboTwin/galaxea_sim/assets/r1/robot.urdf" 
 
 # --- 2. 运动学链配置 (根据你的 URDF 填充) ---
 # 注意：由于 HDF5 里只有手臂数据没有躯干数据，

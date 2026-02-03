@@ -263,57 +263,93 @@ class IKSolver:
         return pos, quat, euler
     
     def inverse_kinematics(self, target_pos, target_euler=None, initial_guess=None, 
-                          max_iterations=100, tolerance=1e-4):
+                          max_iterations=500, tolerance=1e-3):
         """逆运动学：从末端位置（和可选的姿态）计算关节角度
         
         Args:
             target_pos: 目标位置 [x, y, z]
-            target_euler: 目标欧拉角 [roll, pitch, yaw]，可选
+            target_euler: 目标欧拉角 [roll, pitch, yaw]，可选（zyx顺序）
             initial_guess: 初始关节角度猜测（6个），如果为 None 则使用零位
             max_iterations: 最大迭代次数
-            tolerance: 收敛容差
+            tolerance: 收敛容差（位置误差，单位：米）
             
         Returns:
             joint_angles: 6个手臂关节角度
             success: 是否成功求解
         """
-        # 初始猜测
+        # 初始猜测 - 使用当前关节角度可以大大提高收敛速度
         if initial_guess is None:
             x0 = np.zeros(6)
         else:
-            x0 = np.array(initial_guess)
+            x0 = np.array(initial_guess).copy()
         
         target_pos = np.array(target_pos)
+        target_euler = np.array(target_euler) if target_euler is not None else None
         
-        # 定义优化目标函数
+        # 定义优化目标函数 - 位置误差 + 姿态误差
         def objective(joint_angles):
             pos, quat, euler = self.forward_kinematics(joint_angles)
             pos_error = np.linalg.norm(pos - target_pos)
             
             if target_euler is not None:
-                euler_error = np.linalg.norm(euler - np.array(target_euler))
-                return pos_error + 0.1 * euler_error
+                # 计算欧拉角误差，考虑角度周期性
+                euler_diff = euler - target_euler
+                # 将角度差归一化到 [-pi, pi]
+                euler_diff = np.arctan2(np.sin(euler_diff), np.cos(euler_diff))
+                euler_error = np.linalg.norm(euler_diff)
+                # 位置误差权重 1.0，姿态误差权重 0.5
+                return pos_error + 0.5 * euler_error
             else:
                 return pos_error
         
-        # 关节限制
-        bounds = [(-np.pi, np.pi) for _ in range(6)]
+        # 关节限制（根据机器人实际关节限制设置）
+        bounds = [
+            (-2.879, 2.879),   # joint1
+            (-1.571, 2.094),   # joint2
+            (-2.879, 2.879),   # joint3
+            (-1.919, 2.618),   # joint4
+            (-2.879, 2.879),   # joint5
+            (-1.919, 2.618),   # joint6
+        ]
         
-        # 使用优化求解
+        # 使用多次尝试的策略，如果初始猜测不好则尝试其他初始值
+        best_result = None
+        best_error = float('inf')
+        
+        # 第一次尝试：使用提供的初始猜测
         result = minimize(
             objective, 
             x0, 
             method='L-BFGS-B',
             bounds=bounds,
-            options={'maxiter': max_iterations, 'ftol': tolerance}
+            options={'maxiter': max_iterations, 'ftol': 1e-8, 'gtol': 1e-6}
         )
         
-        success = result.success and result.fun < tolerance * 10
+        if result.fun < best_error:
+            best_error = result.fun
+            best_result = result
+        
+        # 如果第一次没收敛好，尝试其他初始值
+        if best_error > tolerance:
+            # 尝试零位
+            result2 = minimize(
+                objective, 
+                np.zeros(6), 
+                method='L-BFGS-B',
+                bounds=bounds,
+                options={'maxiter': max_iterations, 'ftol': 1e-8, 'gtol': 1e-6}
+            )
+            if result2.fun < best_error:
+                best_error = result2.fun
+                best_result = result2
+        
+        # 判断成功：位置误差小于容差（单位：米）
+        success = best_error < tolerance
         
         if not success:
-            print(f"[IKSolver] Warning: IK did not converge well. Error: {result.fun:.6f}")
+            print(f"[IKSolver] Warning: IK did not converge well. Error: {best_error:.6f}")
         
-        return result.x, success
+        return best_result.x, success
 
 
 class ROSDataSubscriber:
@@ -583,8 +619,9 @@ class PI0TestController:
             pos_left, quat_left, _ = self.ik_solver_left.forward_kinematics(joint_left)
             # 四元数转欧拉角 (roll, pitch, yaw)
             # kinpy 返回 [w, x, y, z], scipy 需要 [x, y, z, w]
+            # 注意: 与 h52eepose.py 和 IKSolver 保持一致，使用 'zyx' 顺序
             r = R.from_quat([quat_left[1], quat_left[2], quat_left[3], quat_left[0]])
-            euler_left = r.as_euler('xyz')  # roll, pitch, yaw
+            euler_left = r.as_euler('zyx')  # 与 h52eepose.py 一致
             
             # [x, y, z, roll, pitch, yaw, gripper]
             state[0:3] = pos_left
@@ -600,8 +637,9 @@ class PI0TestController:
             joint_right = arm_right[:6] if len(arm_right) > 6 else arm_right
             pos_right, quat_right, _ = self.ik_solver_right.forward_kinematics(joint_right)
             # 四元数转欧拉角 (roll, pitch, yaw)
+            # 注意: 与 h52eepose.py 和 IKSolver 保持一致，使用 'zyx' 顺序
             r = R.from_quat([quat_right[1], quat_right[2], quat_right[3], quat_right[0]])
-            euler_right = r.as_euler('xyz')  # roll, pitch, yaw
+            euler_right = r.as_euler('zyx')  # 与 h52eepose.py 一致
             
             # [x, y, z, roll, pitch, yaw, gripper]
             state[7:10] = pos_right
@@ -923,6 +961,26 @@ class ZMQCommandPublisher:
         - /motion_control/position_control_gripper_right
     """
     
+    # 初始位置配置
+    # 左臂初始关节角度 (6个关节，发送时会追加无效夹爪值变成7维)
+    INIT_LEFT_JOINTS = np.array([
+        -0.16744680851063828, 2.0108510638297874, -0.6593617021276595,
+        2.002127659574468, 0.39382978723404255, -1.7193617021276595
+    ], dtype=np.float32)
+    
+    # 右臂初始关节角度 (6个关节，发送时会追加无效夹爪值变成7维)
+    INIT_RIGHT_JOINTS = np.array([
+        0.19234042553191488, 1.8925531914893616, -0.6874468085106383,
+        -1.6057446808510638, -0.10148936170212766, 1.3085106382978724
+    ], dtype=np.float32)
+    
+    # 夹爪初始位置 (0-100)
+    INIT_GRIPPER_LEFT = 100.0
+    INIT_GRIPPER_RIGHT = 100.0
+    
+    # 无效夹爪占位值（第7维）
+    INVALID_GRIPPER_VALUE = -2.7
+    
     def __init__(self, host="localhost", port=5556):
         if not ZMQ_AVAILABLE:
             raise RuntimeError("zmq is not available. Install with: pip install pyzmq")
@@ -951,10 +1009,23 @@ class ZMQCommandPublisher:
             left_gripper_raw: 左夹爪位置 (0-100)
             right_joints: 右臂 6 个关节角度 (rad)
             right_gripper_raw: 右夹爪位置 (0-100)
+            
+        Note:
+            发送给机器人的关节角度是 7 维（6关节 + 无效夹爪占位值-2.7）
+            真正的夹爪控制通过单独的 gripper_left/gripper_right 字段发送
         """
+        # 将 6 维关节角扩展为 7 维（追加无效夹爪占位值）
+        def make_7dim(joints):
+            if joints is None:
+                return None
+            joints_list = list(joints)
+            if len(joints_list) == 6:
+                joints_list.append(self.INVALID_GRIPPER_VALUE)
+            return joints_list
+        
         cmd = {
-            'arm_left': list(left_joints) if left_joints is not None else None,
-            'arm_right': list(right_joints) if right_joints is not None else None,
+            'arm_left': make_7dim(left_joints),
+            'arm_right': make_7dim(right_joints),
             'gripper_left': float(left_gripper_raw) if left_gripper_raw is not None else None,
             'gripper_right': float(right_gripper_raw) if right_gripper_raw is not None else None,
         }
@@ -967,6 +1038,67 @@ class ZMQCommandPublisher:
         except Exception as e:
             print(f"[ZMQCommandPub] Error sending command: {e}")
             return False
+    
+    def send_init_position(self, wait_for_confirm=True):
+        """发送初始位置命令
+        
+        将机器人移动到预设的初始位置：
+        - 左臂: INIT_LEFT_JOINTS (6个关节)
+        - 右臂: INIT_RIGHT_JOINTS (6个关节)
+        - 夹爪: 100 (完全打开)
+        
+        Args:
+            wait_for_confirm: 是否等待用户确认
+            
+        Returns:
+            success: 是否成功发送
+        """
+        # 生成 7 维关节角（6 关节 + 无效夹爪占位值）
+        left_joints_7 = list(self.INIT_LEFT_JOINTS) + [self.INVALID_GRIPPER_VALUE]
+        right_joints_7 = list(self.INIT_RIGHT_JOINTS) + [self.INVALID_GRIPPER_VALUE]
+        
+        print("\n" + "="*60)
+        print("🤖 ROBOT INITIALIZATION - MOVE TO INITIAL POSITION")
+        print("="*60)
+        print(f"\nInitial Position Configuration:")
+        print(f"  Left Arm Joints (6):  {list(self.INIT_LEFT_JOINTS)}")
+        print(f"  Right Arm Joints (6): {list(self.INIT_RIGHT_JOINTS)}")
+        print(f"  (Will send as 7-dim with invalid gripper={self.INVALID_GRIPPER_VALUE})")
+        print(f"  Left Gripper:  {self.INIT_GRIPPER_LEFT:.1f} (fully open)")
+        print(f"  Right Gripper: {self.INIT_GRIPPER_RIGHT:.1f} (fully open)")
+        print(f"\n⚠️  WARNING: The robot will move to the initial position!")
+        print(f"    Make sure the workspace is clear and safe.")
+        
+        if wait_for_confirm:
+            print("\n" + "-"*60)
+            while True:
+                user_input = input("Type 'yes' to send init position command (or 'no' to abort): ").strip().lower()
+                if user_input == 'yes':
+                    print("-"*60)
+                    break
+                elif user_input == 'no':
+                    print("\n❌ Aborted by user - init position NOT sent.")
+                    return False
+                else:
+                    print("Please type 'yes' to continue or 'no' to abort.")
+        
+        # 发送初始位置命令
+        success = self.send_command(
+            left_joints=self.INIT_LEFT_JOINTS,
+            left_gripper_raw=self.INIT_GRIPPER_LEFT,
+            right_joints=self.INIT_RIGHT_JOINTS,
+            right_gripper_raw=self.INIT_GRIPPER_RIGHT
+        )
+        
+        if success:
+            print("\n✅ Initial position command sent successfully!")
+            print("   Waiting for robot to reach initial position...")
+            time.sleep(2.0)  # 等待机器人移动到位
+            print("   Robot should now be at initial position.")
+        else:
+            print("\n❌ Failed to send initial position command!")
+        
+        return success
     
     def close(self):
         """关闭连接"""
@@ -1203,7 +1335,7 @@ def main():
                        help="Number of steps to predict")
     
     # 任务参数
-    parser.add_argument("--task_prompt", type=str, default="pour water",
+    parser.add_argument("--task_prompt", type=str, default="pour",
                        help="Task prompt/instruction")
     parser.add_argument("--n_iterations", type=int, default=10,
                        help="Number of test iterations")
@@ -1238,7 +1370,13 @@ def main():
     parser.add_argument("--cmd_port", type=int, default=5556,
                        help="ZMQ command port for publishing control commands")
     parser.add_argument("--action_index", type=int, default=0,
-                       help="Which action to execute (0 = first action)")
+                       help="Which action to start executing from (0 = first action)")
+    parser.add_argument("--execute_steps", type=int, default=1,
+                       help="Number of actions to execute per prediction (should be <= pi0_step)")
+    parser.add_argument("--init_robot", action="store_true", default=True,
+                       help="Initialize robot to starting position before control")
+    parser.add_argument("--confirm_each_command", action="store_true",
+                       help="Require ENTER confirmation before sending each batch of control commands")
     
     args = parser.parse_args()
     
@@ -1293,8 +1431,41 @@ def main():
         if args.publish_command:
             print(f"\n[Main] ⚠️ CONTROL MODE ENABLED! Commands will be sent to robot!")
             print(f"[Main] Command port: {args.cmd_port}")
-            print(f"[Main] Using action index: {args.action_index}")
+            print(f"[Main] Prediction steps: {args.pi0_step}, Execute steps: {args.execute_steps}")
+            if args.confirm_each_command:
+                print(f"[Main] Confirm mode: Will ask for confirmation before each batch")
             cmd_pub = ZMQCommandPublisher(host=args.zmq_host, port=args.cmd_port)
+            
+            # 发送初始位置
+            if args.init_robot:
+                init_success = cmd_pub.send_init_position(wait_for_confirm=True)
+                if not init_success:
+                    print("[Main] Failed to send initial position, aborting...")
+                    zmq_sub.close()
+                    cmd_pub.close()
+                    return
+                
+                # 等待机器人移动到初始位置，然后用户输入 yes 确认
+                print("\n" + "="*60)
+                print("🤖 WAITING FOR ROBOT TO REACH INITIAL POSITION")
+                print("="*60)
+                print("\nPlease wait for the robot to move to the initial position.")
+                print("Once the robot has stopped and is ready, type 'yes' to start PI0 control.\n")
+                
+                while True:
+                    user_input = input("Type 'yes' to start PI0 control (or 'no' to abort): ").strip().lower()
+                    if user_input == 'yes':
+                        print("\n✅ Starting PI0 control loop...")
+                        break
+                    elif user_input == 'no':
+                        print("\n❌ Aborted by user.")
+                        zmq_sub.close()
+                        cmd_pub.close()
+                        return
+                    else:
+                        print("Please type 'yes' to continue or 'no' to abort.")
+                
+                print("="*60)
         
         try:
             for step in range(args.n_iterations):
@@ -1314,6 +1485,21 @@ def main():
                     print("[Main] Missing image data, skipping...")
                     continue
                 
+                # 调试：验证 FK 计算
+                if arm_left is not None and controller.ik_solver_left is not None:
+                    fk_pos, _, fk_euler = controller.ik_solver_left.forward_kinematics(arm_left[:6])
+                    print(f"\n[DEBUG] FK Verification for LEFT arm:")
+                    print(f"    Current joints: {list(arm_left[:6])}")
+                    print(f"    FK position:    {fk_pos}")
+                    print(f"    FK euler(zyx):  {fk_euler}")
+                
+                if arm_right is not None and controller.ik_solver_right is not None:
+                    fk_pos, _, fk_euler = controller.ik_solver_right.forward_kinematics(arm_right[:6])
+                    print(f"[DEBUG] FK Verification for RIGHT arm:")
+                    print(f"    Current joints: {list(arm_right[:6])}")
+                    print(f"    FK position:    {fk_pos}")
+                    print(f"    FK euler(zyx):  {fk_euler}")
+                
                 # 运行推理
                 actions = controller.run_single_inference(
                     head_rgb, left_rgb, right_rgb,
@@ -1323,29 +1509,169 @@ def main():
                     show_joint_delta=args.show_joint_delta
                 )
                 
-                # 发布控制命令
-                if args.publish_command and cmd_pub is not None and len(actions) > args.action_index:
-                    action = actions[args.action_index]
+                # 发布控制命令 - 批量执行多步
+                if args.publish_command and cmd_pub is not None and len(actions) >= args.execute_steps:
                     
-                    # 使用 action_to_robot_command 获取机器人命令格式
-                    left_joints, left_gripper_raw, right_joints, right_gripper_raw, success = \
-                        controller.action_to_robot_command(action)
+                    # 计算所有要执行的动作的 IK
+                    execute_steps = min(args.execute_steps, len(actions))
+                    all_commands = []
+                    ik_fail_count = 0
                     
-                    if success[0] and success[1]:
-                        print(f"\n[Main] >>> PUBLISHING COMMAND to robot <<<")
-                        print(f"    Left  joints: {left_joints}")
-                        print(f"    Left  gripper: {left_gripper_raw:.2f}")
-                        print(f"    Right joints: {right_joints}")
-                        print(f"    Right gripper: {right_gripper_raw:.2f}")
+                    # 用于 IK 失败时的回退值
+                    last_good_left_joints = None
+                    last_good_right_joints = None
+                    last_good_left_gripper = None
+                    last_good_right_gripper = None
+                    
+                    # 尝试从上次发送的命令获取回退值
+                    if hasattr(cmd_pub, '_last_left_joints') and cmd_pub._last_left_joints is not None:
+                        last_good_left_joints = cmd_pub._last_left_joints
+                        last_good_right_joints = cmd_pub._last_right_joints
+                        last_good_left_gripper = getattr(cmd_pub, '_last_left_gripper', 50.0)
+                        last_good_right_gripper = getattr(cmd_pub, '_last_right_gripper', 50.0)
+                    
+                    for action_idx in range(execute_steps):
+                        action = actions[action_idx]
+                        left_joints, left_gripper_raw, right_joints, right_gripper_raw, success = \
+                            controller.action_to_robot_command(action)
                         
-                        cmd_pub.send_command(
-                            left_joints=left_joints,
-                            left_gripper_raw=left_gripper_raw,
-                            right_joints=right_joints,
-                            right_gripper_raw=right_gripper_raw
-                        )
+                        left_ok, right_ok = success[0], success[1]
+                        
+                        # 处理 IK 失败的情况 - 用上一帧的值代替
+                        if not left_ok:
+                            if last_good_left_joints is not None:
+                                print(f"[IK] ⚠️ Action {action_idx}: Left IK failed, using previous value")
+                                left_joints = last_good_left_joints
+                                left_gripper_raw = last_good_left_gripper
+                                ik_fail_count += 1
+                            else:
+                                print(f"[IK] ❌ Action {action_idx}: Left IK failed, no fallback available!")
+                                continue  # 跳过这个动作
+                        
+                        if not right_ok:
+                            if last_good_right_joints is not None:
+                                print(f"[IK] ⚠️ Action {action_idx}: Right IK failed, using previous value")
+                                right_joints = last_good_right_joints
+                                right_gripper_raw = last_good_right_gripper
+                                ik_fail_count += 1
+                            else:
+                                print(f"[IK] ❌ Action {action_idx}: Right IK failed, no fallback available!")
+                                continue  # 跳过这个动作
+                        
+                        # 保存成功的值作为下一帧的回退
+                        if left_ok:
+                            last_good_left_joints = left_joints
+                            last_good_left_gripper = left_gripper_raw
+                        if right_ok:
+                            last_good_right_joints = right_joints
+                            last_good_right_gripper = right_gripper_raw
+                        
+                        all_commands.append({
+                            'action_idx': action_idx,
+                            'left_joints': left_joints,
+                            'left_gripper_raw': left_gripper_raw,
+                            'right_joints': right_joints,
+                            'right_gripper_raw': right_gripper_raw,
+                            'action': action,
+                            'left_ik_ok': left_ok,
+                            'right_ik_ok': right_ok
+                        })
+                    
+                    if len(all_commands) > 0:
+                        # 显示批量执行预览
+                        print(f"\n" + "="*60)
+                        print(f"🎯 BATCH EXECUTION PREVIEW - {len(all_commands)}/{execute_steps} actions")
+                        if ik_fail_count > 0:
+                            print(f"⚠️  IK failures: {ik_fail_count} (using fallback values)")
+                        print("="*60)
+                        
+                        # 显示当前状态
+                        print(f"\n📍 CURRENT STATE (from ROS):")
+                        if arm_left is not None:
+                            print(f"    Left  arm joints:  {list(arm_left[:6])}")
+                        if arm_right is not None:
+                            print(f"    Right arm joints:  {list(arm_right[:6])}")
+                        if gripper_left is not None:
+                            gl_val = gripper_left[0] if hasattr(gripper_left, '__len__') else gripper_left
+                            print(f"    Left  gripper:     {gl_val:.2f} (0-100)")
+                        if gripper_right is not None:
+                            gr_val = gripper_right[0] if hasattr(gripper_right, '__len__') else gripper_right
+                            print(f"    Right gripper:     {gr_val:.2f} (0-100)")
+                        
+                        # 显示第一个和最后一个动作的目标
+                        first_cmd = all_commands[0]
+                        last_cmd = all_commands[-1]
+                        
+                        print(f"\n🎯 ACTION {first_cmd['action_idx']} TARGET (first):")
+                        print(f"    Left  arm joints:  {list(first_cmd['left_joints'])}")
+                        print(f"    Right arm joints:  {list(first_cmd['right_joints'])}")
+                        print(f"    Left  gripper:     {first_cmd['left_gripper_raw']:.2f}")
+                        print(f"    Right gripper:     {first_cmd['right_gripper_raw']:.2f}")
+                        print(f"    IK status:         L={'✅' if first_cmd['left_ik_ok'] else '⚠️fallback'} R={'✅' if first_cmd['right_ik_ok'] else '⚠️fallback'}")
+                        
+                        print(f"\n🎯 ACTION {last_cmd['action_idx']} TARGET (last):")
+                        print(f"    Left  arm joints:  {list(last_cmd['left_joints'])}")
+                        print(f"    Right arm joints:  {list(last_cmd['right_joints'])}")
+                        print(f"    Left  gripper:     {last_cmd['left_gripper_raw']:.2f}")
+                        print(f"    Right gripper:     {last_cmd['right_gripper_raw']:.2f}")
+                        print(f"    IK status:         L={'✅' if last_cmd['left_ik_ok'] else '⚠️fallback'} R={'✅' if last_cmd['right_ik_ok'] else '⚠️fallback'}")
+                        
+                        # 计算总体 delta（从当前到最后一个动作）
+                        if arm_left is not None and arm_right is not None:
+                            total_left_delta = np.array(last_cmd['left_joints']) - np.array(arm_left[:6])
+                            total_right_delta = np.array(last_cmd['right_joints']) - np.array(arm_right[:6])
+                            
+                            print(f"\n📊 TOTAL DELTA (current → last action):")
+                            print(f"    Left  delta:       {total_left_delta}")
+                            print(f"    Left  L2 norm:     {np.linalg.norm(total_left_delta):.6f} rad")
+                            print(f"    Right delta:       {total_right_delta}")
+                            print(f"    Right L2 norm:     {np.linalg.norm(total_right_delta):.6f} rad")
+                        
+                        # 如果启用了确认模式，等待用户确认
+                        should_send = True
+                        if args.confirm_each_command:
+                            print(f"\n" + "-"*60)
+                            print(f"⚠️  CONFIRM: Execute {len(all_commands)} actions?")
+                            user_input = input("Press ENTER to EXECUTE ALL, or type 'skip' to skip: ").strip().lower()
+                            print("-"*60)
+                            if user_input == 'skip':
+                                print("[Main] ⏭️ Batch skipped by user.")
+                                should_send = False
+                        
+                        if should_send:
+                            # 批量执行所有动作
+                            print(f"\n🚀 Executing {len(all_commands)} actions...")
+                            for i, cmd in enumerate(all_commands):
+                                cmd_pub.send_command(
+                                    left_joints=cmd['left_joints'],
+                                    left_gripper_raw=cmd['left_gripper_raw'],
+                                    right_joints=cmd['right_joints'],
+                                    right_gripper_raw=cmd['right_gripper_raw']
+                                )
+                                print(f"    ✅ Action {i} sent")
+                                
+                                # 动作间短暂延迟（避免发送过快）
+                                if i < len(all_commands) - 1:
+                                    time.sleep(0.05)  # 50ms 延迟
+                            
+                            print(f"[Main] ✅ All {len(all_commands)} commands SENT to robot!")
+                            if ik_fail_count > 0:
+                                print(f"[Main] ⚠️ {ik_fail_count} IK failures were replaced with fallback values")
+                            
+                            # 保存最后一个成功的命令用于下次回退
+                            # 找最后一个 IK 成功的命令
+                            for cmd in reversed(all_commands):
+                                if cmd['left_ik_ok']:
+                                    cmd_pub._last_left_joints = cmd['left_joints']
+                                    cmd_pub._last_left_gripper = cmd['left_gripper_raw']
+                                    break
+                            for cmd in reversed(all_commands):
+                                if cmd['right_ik_ok']:
+                                    cmd_pub._last_right_joints = cmd['right_joints']
+                                    cmd_pub._last_right_gripper = cmd['right_gripper_raw']
+                                    break
                     else:
-                        print(f"[Main] IK failed, skipping command publish. Success: {success}")
+                        print(f"\n[Main] ❌ No valid commands - all IK failed and no fallback available")
         finally:
             zmq_sub.close()
             if cmd_pub is not None:

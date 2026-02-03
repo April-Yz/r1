@@ -181,6 +181,9 @@ Overall Error Statistics
 # 终端2: 启动控制模式（会发送命令给机器人！）
 ./run_test_pi0.sh zmq_control
 
+# 终端2: 带确认的控制模式（每次命令前需要确认）
+./run_test_pi0.sh zmq_control_confirm
+
 # ========== 直接使用 Python 脚本 ==========
 # 自定义参数
 source /home/pine/yzj/RoboTwin/policy/pi0/.venv/bin/activate
@@ -211,6 +214,8 @@ python test_pi0_ros.py \
 #   zmq          - 通过 ZMQ 桥接读取 ROS 数据（✅ 推荐）
 #   zmq_ik       - 同上 + 计算 IK
 #   zmq_ik_delta - 同上 + 计算 IK + 关节变化量
+#   zmq_control  - ⚠️ 控制模式：发送命令到机器人
+#   zmq_control_confirm - ⚠️ 控制模式：每次命令前需确认
 ```
 
 ### 直接使用 Python 脚本
@@ -259,6 +264,8 @@ python /home/pine/yzj/src/test_pi0_ros.py \
 | `--compare_gt_action` | `False` | 比较预测与真实 action（仅 bag 模式）|
 | `--publish_command` | `False` | ⚠️ 发布控制命令到机器人（仅 zmq 模式）|
 | `--action_index` | `0` | 执行第几个预测动作（0=第一个）|
+| `--init_robot` | `True` | 控制模式时先发送初始位置 |
+| `--confirm_each_command` | `False` | 每次发送命令前显示详情并等待确认 |
 
 ---
 

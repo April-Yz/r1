@@ -35,7 +35,8 @@ cd /home/pine/yzj/src
 TRAIN_CONFIG_NAME="R1_FFT_pour_35_0130_5k"
 CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/10000"
 PI0_STEP=10
-TASK_PROMPT="pour water"
+EXECUTE_STEPS=10  # 每次预测后执行多少步（应 <= PI0_STEP）
+TASK_PROMPT="pour"
 N_ITERATIONS=10
 
 # 检查参数
@@ -48,6 +49,7 @@ echo "========================================"
 echo "Train Config: ${TRAIN_CONFIG_NAME}"
 echo "Checkpoint:   ${CHECKPOINT_PATH}"
 echo "PI0 Step:     ${PI0_STEP}"
+echo "Execute Steps:${EXECUTE_STEPS}"
 echo "Task Prompt:  ${TASK_PROMPT}"
 echo "Mode:         ${MODE}"
 if [ -n "${BAG_FILE}" ]; then
@@ -201,23 +203,65 @@ case ${MODE} in
         echo "IMPORTANT: First run ros_bridge.py in another terminal:"
         echo "  /usr/bin/python3 /home/pine/yzj/src/ros_bridge.py"
         echo ""
+        echo "Prediction: ${PI0_STEP} steps, Execute: ${EXECUTE_STEPS} steps"
+        echo ""
         echo "Control topics:"
         echo "  /motion_target/target_joint_state_arm_left"
         echo "  /motion_target/target_joint_state_arm_right"
         echo "  /motion_control/position_control_gripper_left"
         echo "  /motion_control/position_control_gripper_right"
+        echo ""
+        echo "NOTE: Will run continuously until Ctrl+C"
         echo "=============================================="
         read -p "Press Enter to continue or Ctrl+C to cancel..."
         python test_pi0_ros.py \
             --train_config_name ${TRAIN_CONFIG_NAME} \
             --checkpoint_path ${CHECKPOINT_PATH} \
             --pi0_step ${PI0_STEP} \
+            --execute_steps ${EXECUTE_STEPS} \
             --task_prompt "${TASK_PROMPT}" \
-            --n_iterations ${N_ITERATIONS} \
+            --n_iterations 999999 \
             --zmq_mode \
             --compute_ik \
             --publish_command \
             --show_joint_delta
+        ;;
+    
+    "zmq_control_confirm")
+        echo "=============================================="
+        echo "⚠️  WARNING: CONTROL MODE (WITH CONFIRMATION)"
+        echo "=============================================="
+        echo "IMPORTANT: First run ros_bridge.py in another terminal:"
+        echo "  /usr/bin/python3 /home/pine/yzj/src/ros_bridge.py"
+        echo ""
+        echo "Prediction: ${PI0_STEP} steps, Execute: ${EXECUTE_STEPS} steps"
+        echo ""
+        echo "This mode will:"
+        echo "  1. Send init position → wait for 'yes' to start"
+        echo "  2. Execute ${EXECUTE_STEPS} actions per prediction"
+        echo "  3. Before each batch → show info + wait for ENTER"
+        echo ""
+        echo "Control topics:"
+        echo "  /motion_target/target_joint_state_arm_left"
+        echo "  /motion_target/target_joint_state_arm_right"
+        echo "  /motion_control/position_control_gripper_left"
+        echo "  /motion_control/position_control_gripper_right"
+        echo ""
+        echo "NOTE: Will run continuously until Ctrl+C"
+        echo "=============================================="
+        read -p "Press Enter to continue or Ctrl+C to cancel..."
+        python test_pi0_ros.py \
+            --train_config_name ${TRAIN_CONFIG_NAME} \
+            --checkpoint_path ${CHECKPOINT_PATH} \
+            --pi0_step ${PI0_STEP} \
+            --execute_steps ${EXECUTE_STEPS} \
+            --task_prompt "${TASK_PROMPT}" \
+            --n_iterations 999999 \
+            --zmq_mode \
+            --compute_ik \
+            --publish_command \
+            --show_joint_delta \
+            --confirm_each_command
         ;;
     
     *)
@@ -225,16 +269,17 @@ case ${MODE} in
         echo "Usage: ./run_test_pi0.sh <mode> [bag_file_path]"
         echo ""
         echo "Available modes:"
-        echo "  dummy        - Test model loading with random images"
-        echo "  bag          - Read from rosbag file (print action only)"
-        echo "  bag_compare  - Read from rosbag file + compare with GT action"
-        echo "  bag_full     - Read from rosbag file + IK + GT comparison + joint delta"
-        echo "  ros          - Read from ROS topics (may have Python version issues)"
-        echo "  ros_ik       - Read from ROS topics + IK computation"
-        echo "  zmq          - Read via ZMQ bridge (print action only)"
-        echo "  zmq_ik       - Read via ZMQ bridge + IK computation"
-        echo "  zmq_ik_delta - Read via ZMQ bridge + IK + joint delta"
-        echo "  zmq_control  - ⚠️ CONTROL MODE: Send commands to robot via ZMQ"
+        echo "  dummy               - Test model loading with random images"
+        echo "  bag                 - Read from rosbag file (print action only)"
+        echo "  bag_compare         - Read from rosbag file + compare with GT action"
+        echo "  bag_full            - Read from rosbag file + IK + GT comparison + joint delta"
+        echo "  ros                 - Read from ROS topics (may have Python version issues)"
+        echo "  ros_ik              - Read from ROS topics + IK computation"
+        echo "  zmq                 - Read via ZMQ bridge (print action only)"
+        echo "  zmq_ik              - Read via ZMQ bridge + IK computation"
+        echo "  zmq_ik_delta        - Read via ZMQ bridge + IK + joint delta"
+        echo "  zmq_control         - ⚠️ CONTROL MODE: Send commands to robot via ZMQ"
+        echo "  zmq_control_confirm - ⚠️ CONTROL MODE: Confirm before each command"
         exit 1
         ;;
 esac
