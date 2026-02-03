@@ -666,6 +666,28 @@ class PI0TestController:
         
         return joint_angles, gripper, success
     
+    def action_to_robot_command(self, action):
+        """将 eepose action 转换为机器人命令格式
+        
+        Args:
+            action: 完整的 14 维动作向量 [left(7), right(7)]
+            
+        Returns:
+            left_joints: 左臂 6 个关节角度 (rad)
+            left_gripper_raw: 左夹爪原始值 (0-100)
+            right_joints: 右臂 6 个关节角度 (rad)
+            right_gripper_raw: 右夹爪原始值 (0-100)
+            success: (left_success, right_success)
+        """
+        left_joints, left_gripper, left_success = self.action_to_joint_angles(action, 'left')
+        right_joints, right_gripper, right_success = self.action_to_joint_angles(action, 'right')
+        
+        # 夹爪从 0-1 转换回 0-100
+        left_gripper_raw = left_gripper * 100.0 if left_gripper is not None else None
+        right_gripper_raw = right_gripper * 100.0 if right_gripper is not None else None
+        
+        return left_joints, left_gripper_raw, right_joints, right_gripper_raw, (left_success, right_success)
+    
     def run_single_inference(self, head_rgb, left_rgb, right_rgb, 
                             arm_left, arm_right, gripper_left, gripper_right,
                             task_prompt, print_only=True, show_joint_delta=False,
@@ -758,6 +780,7 @@ class PI0TestController:
         if not print_only:
             # 转换为关节角度并输出
             print("\n[Controller] Converting to joint angles:")
+            print("  (gripper: 0-1 normalized, raw=0-100 for robot command)")
             for i, action in enumerate(actions):
                 # action 格式: [left(7), right(7)] 共 14 维
                 # 每个臂: [x, y, z, roll, pitch, yaw, gripper]
@@ -770,9 +793,12 @@ class PI0TestController:
                     
                     print(f"  Step {i}:")
                     if left_joints is not None:
-                        print(f"    Left  joints: {left_joints}, gripper: {left_gripper:.4f}, success: {left_success}")
+                        # gripper: 显示归一化值和原始值
+                        left_gripper_raw = left_gripper * 100.0
+                        print(f"    Left  joints: {left_joints}, gripper: {left_gripper:.4f} (raw: {left_gripper_raw:.2f}), success: {left_success}")
                     if right_joints is not None:
-                        print(f"    Right joints: {right_joints}, gripper: {right_gripper:.4f}, success: {right_success}")
+                        right_gripper_raw = right_gripper * 100.0
+                        print(f"    Right joints: {right_joints}, gripper: {right_gripper:.4f} (raw: {right_gripper_raw:.2f}), success: {right_success}")
                     
                     # 显示关节角度变化量 (仅对第一个 action)
                     if show_joint_delta and i == 0:
@@ -880,6 +906,67 @@ class ZMQDataSubscriber:
         except Exception as e:
             print(f"[ZMQSubscriber] Error receiving data: {e}")
             return None
+    
+    def close(self):
+        """关闭连接"""
+        self.socket.close()
+        self.context.term()
+
+
+class ZMQCommandPublisher:
+    """通过 ZMQ 向 ros_bridge.py 发送控制命令
+    
+    ros_bridge.py 会将命令发布到 ROS topics:
+        - /motion_target/target_joint_state_arm_left
+        - /motion_target/target_joint_state_arm_right
+        - /motion_control/position_control_gripper_left
+        - /motion_control/position_control_gripper_right
+    """
+    
+    def __init__(self, host="localhost", port=5556):
+        if not ZMQ_AVAILABLE:
+            raise RuntimeError("zmq is not available. Install with: pip install pyzmq")
+        
+        print(f"[ZMQCommandPub] Connecting to {host}:{port}...")
+        
+        import pickle
+        self.pickle = pickle
+        
+        self.context = zmq.Context()
+        self.socket = self.context.socket(zmq.PUB)
+        self.socket.connect(f"tcp://{host}:{port}")
+        
+        # 等待连接建立
+        time.sleep(0.5)
+        
+        self.cmd_count = 0
+        print("[ZMQCommandPub] Connected! Ready to send commands.")
+    
+    def send_command(self, left_joints=None, left_gripper_raw=None, 
+                    right_joints=None, right_gripper_raw=None):
+        """发送控制命令
+        
+        Args:
+            left_joints: 左臂 6 个关节角度 (rad)，numpy array 或 list
+            left_gripper_raw: 左夹爪位置 (0-100)
+            right_joints: 右臂 6 个关节角度 (rad)
+            right_gripper_raw: 右夹爪位置 (0-100)
+        """
+        cmd = {
+            'arm_left': list(left_joints) if left_joints is not None else None,
+            'arm_right': list(right_joints) if right_joints is not None else None,
+            'gripper_left': float(left_gripper_raw) if left_gripper_raw is not None else None,
+            'gripper_right': float(right_gripper_raw) if right_gripper_raw is not None else None,
+        }
+        
+        try:
+            cmd_bytes = self.pickle.dumps(cmd)
+            self.socket.send(cmd_bytes)
+            self.cmd_count += 1
+            return True
+        except Exception as e:
+            print(f"[ZMQCommandPub] Error sending command: {e}")
+            return False
     
     def close(self):
         """关闭连接"""
@@ -1145,6 +1232,14 @@ def main():
     parser.add_argument("--compare_gt_action", action="store_true",
                        help="Compare predicted action with ground truth (bag mode only)")
     
+    # 控制机器人功能
+    parser.add_argument("--publish_command", action="store_true",
+                       help="Publish control commands to ROS via ros_bridge.py (zmq mode only)")
+    parser.add_argument("--cmd_port", type=int, default=5556,
+                       help="ZMQ command port for publishing control commands")
+    parser.add_argument("--action_index", type=int, default=0,
+                       help="Which action to execute (0 = first action)")
+    
     args = parser.parse_args()
     
     # 初始化模型
@@ -1186,7 +1281,20 @@ def main():
             print("[Error] zmq is not available. Install with: pip install pyzmq")
             return
         
+        # 如果启用发布命令，需要计算 IK
+        if args.publish_command and not args.compute_ik:
+            print("[Main] --publish_command requires --compute_ik, enabling it automatically...")
+            args.compute_ik = True
+        
         zmq_sub = ZMQDataSubscriber(host=args.zmq_host, port=args.zmq_port)
+        
+        # 命令发布器
+        cmd_pub = None
+        if args.publish_command:
+            print(f"\n[Main] ⚠️ CONTROL MODE ENABLED! Commands will be sent to robot!")
+            print(f"[Main] Command port: {args.cmd_port}")
+            print(f"[Main] Using action index: {args.action_index}")
+            cmd_pub = ZMQCommandPublisher(host=args.zmq_host, port=args.cmd_port)
         
         try:
             for step in range(args.n_iterations):
@@ -1214,8 +1322,34 @@ def main():
                     print_only=not args.compute_ik,
                     show_joint_delta=args.show_joint_delta
                 )
+                
+                # 发布控制命令
+                if args.publish_command and cmd_pub is not None and len(actions) > args.action_index:
+                    action = actions[args.action_index]
+                    
+                    # 使用 action_to_robot_command 获取机器人命令格式
+                    left_joints, left_gripper_raw, right_joints, right_gripper_raw, success = \
+                        controller.action_to_robot_command(action)
+                    
+                    if success[0] and success[1]:
+                        print(f"\n[Main] >>> PUBLISHING COMMAND to robot <<<")
+                        print(f"    Left  joints: {left_joints}")
+                        print(f"    Left  gripper: {left_gripper_raw:.2f}")
+                        print(f"    Right joints: {right_joints}")
+                        print(f"    Right gripper: {right_gripper_raw:.2f}")
+                        
+                        cmd_pub.send_command(
+                            left_joints=left_joints,
+                            left_gripper_raw=left_gripper_raw,
+                            right_joints=right_joints,
+                            right_gripper_raw=right_gripper_raw
+                        )
+                    else:
+                        print(f"[Main] IK failed, skipping command publish. Success: {success}")
         finally:
             zmq_sub.close()
+            if cmd_pub is not None:
+                cmd_pub.close()
     
     elif args.bag_file:
         # 从 rosbag 文件读取数据

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
 ROS 数据桥接节点 - 使用系统 Python 3.8 运行
-将 ROS topics 数据通过 ZMQ 发送给 PI0 模型（Python 3.11）
+双向桥接：
+  1. 将 ROS topics 数据通过 ZMQ 发送给 PI0 模型（Python 3.11）
+  2. 接收 PI0 命令并发布到 ROS topics 控制机器人
 
 使用方法:
     # 在终端1运行此脚本（使用系统 Python）
@@ -9,6 +11,9 @@ ROS 数据桥接节点 - 使用系统 Python 3.8 运行
 
     # 在终端2运行 PI0 测试（使用 openpi 虚拟环境）
     ./run_test_pi0.sh zmq
+    
+    # 如果需要发布控制命令:
+    ./run_test_pi0.sh zmq_control
 """
 
 import sys
@@ -16,6 +21,8 @@ import os
 import time
 import json
 import numpy as np
+import threading
+import pickle
 
 # ROS 设置
 sys.path.insert(0, '/opt/ros/noetic/lib/python3/dist-packages')
@@ -24,6 +31,7 @@ os.environ.setdefault('ROS_IP', '192.168.123.15')
 
 import rospy
 from sensor_msgs.msg import CompressedImage, JointState
+from std_msgs.msg import Float64MultiArray
 import cv2
 
 # ZMQ 设置
@@ -35,9 +43,10 @@ except ImportError:
 
 
 class ROSBridge:
-    """ROS 数据桥接器，通过 ZMQ 发送数据"""
+    """ROS 数据桥接器，双向通信"""
     
-    TOPICS = {
+    # 读取数据的 topics (带 _low 后缀用于低频记录)
+    READ_TOPICS = {
         'head_rgb': '/hdas/camera_head/rgb/image_rect_color/compressed',
         'left_rgb': '/left/camera/color/image_raw/compressed',
         'right_rgb': '/right/camera/color/image_raw/compressed',
@@ -47,37 +56,66 @@ class ROSBridge:
         'gripper_right': '/hdas/feedback_gripper_right_low',
     }
     
-    def __init__(self, port=5555):
-        # ZMQ 设置
+    # 发送控制命令的 topics (不带 _low，这些是真正控制机器人的)
+    CONTROL_TOPICS = {
+        'arm_left': '/motion_target/target_joint_state_arm_left',
+        'arm_right': '/motion_target/target_joint_state_arm_right',
+        'gripper_left': '/motion_control/position_control_gripper_left',
+        'gripper_right': '/motion_control/position_control_gripper_right',
+    }
+    
+    def __init__(self, data_port=5555, cmd_port=5556):
+        # ZMQ 设置 - 数据发布
         self.context = zmq.Context()
-        self.socket = self.context.socket(zmq.PUB)
-        self.socket.bind(f"tcp://*:{port}")
-        print(f"[ROSBridge] ZMQ publisher started on port {port}")
+        self.data_socket = self.context.socket(zmq.PUB)
+        self.data_socket.bind(f"tcp://*:{data_port}")
+        print(f"[ROSBridge] ZMQ data publisher started on port {data_port}")
+        
+        # ZMQ 设置 - 命令接收
+        self.cmd_socket = self.context.socket(zmq.SUB)
+        self.cmd_socket.bind(f"tcp://*:{cmd_port}")
+        self.cmd_socket.setsockopt_string(zmq.SUBSCRIBE, "")
+        self.cmd_socket.setsockopt(zmq.RCVTIMEO, 10)  # 10ms 超时
+        print(f"[ROSBridge] ZMQ command receiver started on port {cmd_port}")
         
         # 数据存储
-        self.data = {key: None for key in self.TOPICS.keys()}
-        self.last_update = {key: 0 for key in self.TOPICS.keys()}
+        self.data = {key: None for key in self.READ_TOPICS.keys()}
+        self.last_update = {key: 0 for key in self.READ_TOPICS.keys()}
+        
+        # 命令计数
+        self.cmd_count = 0
         
         # 初始化 ROS
         print("[ROSBridge] Initializing ROS node...")
         rospy.init_node('ros_bridge_node', anonymous=True)
         
-        # 订阅话题
-        print("[ROSBridge] Subscribing to topics...")
-        rospy.Subscriber(self.TOPICS['head_rgb'], CompressedImage, 
+        # 订阅读取话题
+        print("[ROSBridge] Subscribing to read topics...")
+        rospy.Subscriber(self.READ_TOPICS['head_rgb'], CompressedImage, 
                         lambda msg: self._image_callback(msg, 'head_rgb'))
-        rospy.Subscriber(self.TOPICS['left_rgb'], CompressedImage,
+        rospy.Subscriber(self.READ_TOPICS['left_rgb'], CompressedImage,
                         lambda msg: self._image_callback(msg, 'left_rgb'))
-        rospy.Subscriber(self.TOPICS['right_rgb'], CompressedImage,
+        rospy.Subscriber(self.READ_TOPICS['right_rgb'], CompressedImage,
                         lambda msg: self._image_callback(msg, 'right_rgb'))
-        rospy.Subscriber(self.TOPICS['arm_left'], JointState,
+        rospy.Subscriber(self.READ_TOPICS['arm_left'], JointState,
                         lambda msg: self._joint_callback(msg, 'arm_left'))
-        rospy.Subscriber(self.TOPICS['arm_right'], JointState,
+        rospy.Subscriber(self.READ_TOPICS['arm_right'], JointState,
                         lambda msg: self._joint_callback(msg, 'arm_right'))
-        rospy.Subscriber(self.TOPICS['gripper_left'], JointState,
+        rospy.Subscriber(self.READ_TOPICS['gripper_left'], JointState,
                         lambda msg: self._joint_callback(msg, 'gripper_left'))
-        rospy.Subscriber(self.TOPICS['gripper_right'], JointState,
+        rospy.Subscriber(self.READ_TOPICS['gripper_right'], JointState,
                         lambda msg: self._joint_callback(msg, 'gripper_right'))
+        
+        # 创建控制发布器
+        print("[ROSBridge] Creating control publishers...")
+        self.arm_left_pub = rospy.Publisher(
+            self.CONTROL_TOPICS['arm_left'], JointState, queue_size=1)
+        self.arm_right_pub = rospy.Publisher(
+            self.CONTROL_TOPICS['arm_right'], JointState, queue_size=1)
+        self.gripper_left_pub = rospy.Publisher(
+            self.CONTROL_TOPICS['gripper_left'], JointState, queue_size=1)
+        self.gripper_right_pub = rospy.Publisher(
+            self.CONTROL_TOPICS['gripper_right'], JointState, queue_size=1)
         
         print("[ROSBridge] Ready! Waiting for data...")
     
@@ -136,26 +174,97 @@ class ROSBridge:
         }
         return packed
     
+    def _publish_control_command(self, cmd):
+        """发布控制命令到 ROS topics
+        
+        命令格式:
+        {
+            'arm_left': [j1, j2, j3, j4, j5, j6],   # 6 个关节角度 (rad)
+            'arm_right': [j1, j2, j3, j4, j5, j6],
+            'gripper_left': float,   # 0-100
+            'gripper_right': float,  # 0-100
+        }
+        """
+        try:
+            # 发布左臂关节角度
+            if cmd.get('arm_left') is not None:
+                msg = JointState()
+                msg.header.stamp = rospy.Time.now()
+                msg.position = cmd['arm_left']
+                self.arm_left_pub.publish(msg)
+            
+            # 发布右臂关节角度
+            if cmd.get('arm_right') is not None:
+                msg = JointState()
+                msg.header.stamp = rospy.Time.now()
+                msg.position = cmd['arm_right']
+                self.arm_right_pub.publish(msg)
+            
+            # 发布左夹爪
+            if cmd.get('gripper_left') is not None:
+                msg = JointState()
+                msg.header.stamp = rospy.Time.now()
+                msg.position = [cmd['gripper_left']]  # 0-100
+                self.gripper_left_pub.publish(msg)
+            
+            # 发布右夹爪
+            if cmd.get('gripper_right') is not None:
+                msg = JointState()
+                msg.header.stamp = rospy.Time.now()
+                msg.position = [cmd['gripper_right']]  # 0-100
+                self.gripper_right_pub.publish(msg)
+            
+            self.cmd_count += 1
+            return True
+        except Exception as e:
+            print(f"[ROSBridge] Error publishing command: {e}")
+            return False
+    
+    def _receive_commands(self):
+        """接收并执行控制命令（非阻塞）"""
+        try:
+            while True:
+                try:
+                    cmd_bytes = self.cmd_socket.recv(zmq.NOBLOCK)
+                    cmd = pickle.loads(cmd_bytes)
+                    
+                    if self._publish_control_command(cmd):
+                        if self.cmd_count % 10 == 1:
+                            print(f"[ROSBridge] Published command #{self.cmd_count}")
+                except zmq.Again:
+                    # 没有更多命令
+                    break
+        except Exception as e:
+            print(f"[ROSBridge] Error receiving command: {e}")
+    
     def run(self, rate_hz=15):
         """主循环"""
         rate = rospy.Rate(rate_hz)
         frame_count = 0
         
         print(f"[ROSBridge] Publishing at {rate_hz} Hz")
+        print(f"[ROSBridge] Control topics:")
+        print(f"    Arm Left:     {self.CONTROL_TOPICS['arm_left']}")
+        print(f"    Arm Right:    {self.CONTROL_TOPICS['arm_right']}")
+        print(f"    Gripper Left: {self.CONTROL_TOPICS['gripper_left']}")
+        print(f"    Gripper Right:{self.CONTROL_TOPICS['gripper_right']}")
         
         while not rospy.is_shutdown():
+            # 1. 接收并执行控制命令
+            self._receive_commands()
+            
+            # 2. 发布传感器数据
             if self._check_data_ready():
                 packed = self._pack_data()
                 
-                # 使用 msgpack 或 pickle 序列化
-                import pickle
+                # 使用 pickle 序列化
                 data_bytes = pickle.dumps(packed)
                 
-                self.socket.send(data_bytes)
+                self.data_socket.send(data_bytes)
                 frame_count += 1
                 
                 if frame_count % 30 == 0:
-                    print(f"[ROSBridge] Published {frame_count} frames")
+                    print(f"[ROSBridge] Published {frame_count} frames, {self.cmd_count} commands")
             else:
                 if frame_count == 0:
                     missing = [k for k, t in self.last_update.items() if time.time() - t > 1.0]
@@ -164,19 +273,21 @@ class ROSBridge:
             
             rate.sleep()
         
-        self.socket.close()
+        self.data_socket.close()
+        self.cmd_socket.close()
         self.context.term()
 
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=5555, help="ZMQ port")
+    parser.add_argument("--data_port", type=int, default=5555, help="ZMQ data port")
+    parser.add_argument("--cmd_port", type=int, default=5556, help="ZMQ command port")
     parser.add_argument("--rate", type=int, default=15, help="Publishing rate (Hz)")
     args = parser.parse_args()
     
     try:
-        bridge = ROSBridge(port=args.port)
+        bridge = ROSBridge(data_port=args.data_port, cmd_port=args.cmd_port)
         bridge.run(rate_hz=args.rate)
     except rospy.ROSInterruptException:
         pass

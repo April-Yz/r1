@@ -174,6 +174,13 @@ Overall Error Statistics
 # 从 bag 读取，完整分析（IK + 关节变化量 + GT 比较）
 ./run_test_pi0.sh bag_full /home/pine/yzj/pour/r1_data_20260202_172011.bag
 
+# ========== ⚠️ 控制机器人 ==========
+# 终端1: 启动 ROS 桥接
+/usr/bin/python3 /home/pine/yzj/src/ros_bridge.py
+
+# 终端2: 启动控制模式（会发送命令给机器人！）
+./run_test_pi0.sh zmq_control
+
 # ========== 直接使用 Python 脚本 ==========
 # 自定义参数
 source /home/pine/yzj/RoboTwin/policy/pi0/.venv/bin/activate
@@ -242,19 +249,22 @@ python /home/pine/yzj/src/test_pi0_ros.py \
 | `--ros_mode` | `False` | 使用 ROS topics 直接读取 |
 | `--zmq_mode` | `False` | 使用 ZMQ 桥接读取（推荐）|
 | `--zmq_host` | `localhost` | ZMQ 服务器地址 |
-| `--zmq_port` | `5555` | ZMQ 端口 |
+| `--zmq_port` | `5555` | ZMQ 数据端口 |
+| `--cmd_port` | `5556` | ZMQ 命令端口（控制模式）|
 | `--bag_file` | `None` | Rosbag 文件路径 |
 | `--dummy_mode` | `False` | 使用随机图像测试 |
 | `--print_only` | `True` | 仅打印 eepose 结果 |
 | `--compute_ik` | `False` | 计算 IK 输出关节角度 |
 | `--show_joint_delta` | `False` | 显示关节角度变化量（需要 --compute_ik）|
 | `--compare_gt_action` | `False` | 比较预测与真实 action（仅 bag 模式）|
+| `--publish_command` | `False` | ⚠️ 发布控制命令到机器人（仅 zmq 模式）|
+| `--action_index` | `0` | 执行第几个预测动作（0=第一个）|
 
 ---
 
 ## ROS Topics
 
-### 需要订阅的 Topics
+### 读取数据的 Topics（带 _low 后缀，低频版本）
 
 | Topic | 类型 | 说明 |
 |-------|------|------|
@@ -265,6 +275,15 @@ python /home/pine/yzj/src/test_pi0_ros.py \
 | `/hdas/feedback_arm_right_low` | JointState | 右臂关节反馈 |
 | `/hdas/feedback_gripper_left_low` | JointState | 左夹爪反馈 |
 | `/hdas/feedback_gripper_right_low` | JointState | 右夹爪反馈 |
+
+### 控制机器人的 Topics（无 _low 后缀）
+
+| Topic | 类型 | 说明 |
+|-------|------|------|
+| `/motion_target/target_joint_state_arm_left` | JointState | 左臂关节目标 |
+| `/motion_target/target_joint_state_arm_right` | JointState | 右臂关节目标 |
+| `/motion_control/position_control_gripper_left` | JointState | 左夹爪目标 (0-100) |
+| `/motion_control/position_control_gripper_right` | JointState | 右夹爪目标 (0-100) |
 
 ---
 
