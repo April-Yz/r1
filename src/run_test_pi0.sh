@@ -304,7 +304,7 @@ case ${MODE} in
             --publish_command \
             --show_joint_delta \
             --confirm_each_command \
-            --auto_execute_threshold 0.08 \
+            --auto_execute_threshold 0.10 \
             --auto_joint_threshold 0.2
         ;;
     
