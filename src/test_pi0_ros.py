@@ -30,6 +30,7 @@ import traceback
 import argparse
 import cv2
 import threading
+import signal
 from PIL import Image
 from scipy.spatial.transform import Rotation as R
 from scipy.optimize import minimize
@@ -582,7 +583,9 @@ class PI0TestController:
             state[0:3] = pos_left
             state[3:6] = euler_left
             # 夹爪值从 0-100 归一化到 0-1
-            gripper_val = gripper_left[0] / 100.0 if gripper_left is not None and len(gripper_left) > 0 else 0.0
+            gripper_raw = gripper_left[0] if gripper_left is not None and len(gripper_left) > 0 else 0.0
+            gripper_val = gripper_raw / 100.0
+            print(f"[DEBUG compute_state] Left gripper: raw={gripper_raw:.2f} (0-100) -> normalized={gripper_val:.4f} (0-1)")
             state[6] = float(gripper_val)
             self.current_joint_left = joint_left
             self.current_gripper_left = gripper_val
@@ -600,7 +603,9 @@ class PI0TestController:
             state[7:10] = pos_right
             state[10:13] = euler_right
             # 夹爪值从 0-100 归一化到 0-1
-            gripper_val = gripper_right[0] / 100.0 if gripper_right is not None and len(gripper_right) > 0 else 0.0
+            gripper_raw = gripper_right[0] if gripper_right is not None and len(gripper_right) > 0 else 0.0
+            gripper_val = gripper_raw / 100.0
+            print(f"[DEBUG compute_state] Right gripper: raw={gripper_raw:.2f} (0-100) -> normalized={gripper_val:.4f} (0-1)")
             state[13] = float(gripper_val)
             self.current_joint_right = joint_right
             self.current_gripper_right = gripper_val
@@ -704,6 +709,19 @@ class PI0TestController:
         Returns:
             actions: 模型预测的动作序列
         """
+        # 调试输出：显示接收到的原始joint和gripper值
+        print(f"\n[Controller] INPUT RAW VALUES (before FK):")
+        if arm_left is not None:
+            print(f"    Left  arm joints (6):  {list(arm_left[:6])}")
+        if arm_right is not None:
+            print(f"    Right arm joints (6):  {list(arm_right[:6])}")
+        if gripper_left is not None:
+            gl_val = gripper_left[0] if hasattr(gripper_left, '__len__') else gripper_left
+            print(f"    Left  gripper (raw):   {gl_val} (should be 0-100 range)")
+        if gripper_right is not None:
+            gr_val = gripper_right[0] if hasattr(gripper_right, '__len__') else gripper_right
+            print(f"    Right gripper (raw):   {gr_val} (should be 0-100 range)")
+        
         # 保存当前关节角度用于计算 delta
         prev_joint_left = self.current_joint_left.copy() if self.current_joint_left is not None else None
         prev_joint_right = self.current_joint_right.copy() if self.current_joint_right is not None else None
@@ -713,8 +731,9 @@ class PI0TestController:
         # 计算状态向量
         state = self.compute_state_vector(arm_left, arm_right, gripper_left, gripper_right)
         print(f"\n[Controller] State vector (14 dims, format: xyz+euler+gripper):")
-        print(f"    Left:  pos={state[:3]}, euler={state[3:6]}, gripper={state[6]:.4f}")
-        print(f"    Right: pos={state[7:10]}, euler={state[10:13]}, gripper={state[13]:.4f}")
+        print(f"    Left:  pos={state[:3]}, euler={state[3:6]}, gripper={state[6]:.4f} (normalized 0-1)")
+        print(f"    Right: pos={state[7:10]}, euler={state[10:13]}, gripper={state[13]:.4f} (normalized 0-1)")
+        print(f"    Note: gripper values are normalized from 0-100 to 0-1 for model input")
         
         # 设置语言指令
         if self.model.observation_window is None:
@@ -827,15 +846,143 @@ def create_dummy_images():
     return head_rgb, left_rgb, right_rgb
 
 
+class VideoRecorder:
+    """视频录制器 - 支持Ctrl+C时正常关闭，持续录制"""
+    
+    def __init__(self, output_dir="results", fps=15.0, frame_size=(640, 480), zmq_subscriber=None):
+        """
+        初始化视频录制器
+        
+        Args:
+            output_dir: 输出目录
+            fps: 帧率
+            frame_size: 帧大小 (width, height)
+            zmq_subscriber: ZMQ订阅器，用于持续接收图像
+        """
+        self.output_dir = output_dir
+        self.fps = fps
+        self.frame_size = frame_size
+        self.video_writer = None
+        self.video_path = None
+        self.frame_count = 0
+        self.zmq_subscriber = zmq_subscriber
+        self.recording = False
+        self.record_thread = None
+        
+        # 创建输出目录
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # 生成带时间戳的文件名
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        self.video_path = os.path.join(output_dir, f"head_cam_{timestamp}.mp4")
+        
+        # 初始化VideoWriter
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        self.video_writer = cv2.VideoWriter(
+            self.video_path, fourcc, fps, frame_size
+        )
+        
+        if not self.video_writer.isOpened():
+            raise RuntimeError(f"Failed to open video writer: {self.video_path}")
+        
+        print(f"\n[VideoRecorder] Recording to: {self.video_path}")
+        print(f"[VideoRecorder] FPS: {fps}, Size: {frame_size}")
+        
+        # 如果提供了ZMQ订阅器，启动后台录制线程
+        if zmq_subscriber is not None:
+            self.start_continuous_recording()
+    
+    def start_continuous_recording(self):
+        """启动后台线程持续录制"""
+        if self.zmq_subscriber is None:
+            return
+        
+        self.recording = True
+        self.record_thread = threading.Thread(target=self._continuous_record_loop, daemon=True)
+        self.record_thread.start()
+        print(f"[VideoRecorder] 🎬 Started continuous recording thread")
+    
+    def _continuous_record_loop(self):
+        """后台线程：持续接收并录制图像"""
+        last_frame_time = time.time()
+        frame_interval = 1.0 / self.fps  # 按目标FPS录制
+        
+        while self.recording:
+            try:
+                # 接收数据
+                result = self.zmq_subscriber.receive()
+                if result is None:
+                    time.sleep(0.01)
+                    continue
+                
+                head_rgb, _, _, _, _, _, _ = result
+                if head_rgb is None:
+                    time.sleep(0.01)
+                    continue
+                
+                # 按帧率控制录制频率
+                current_time = time.time()
+                if current_time - last_frame_time >= frame_interval:
+                    self.write_frame(head_rgb)
+                    last_frame_time = current_time
+                else:
+                    # 等到下一帧时间
+                    time.sleep(max(0, frame_interval - (current_time - last_frame_time)))
+            
+            except Exception as e:
+                print(f"[VideoRecorder] Recording error: {e}")
+                time.sleep(0.1)
+    
+    def write_frame(self, frame):
+        """写入一帧图像
+        
+        Args:
+            frame: RGB图像 (H, W, 3) numpy array
+        """
+        if self.video_writer is None or not self.video_writer.isOpened():
+            return
+        
+        # RGB -> BGR for cv2
+        if frame.shape[2] == 3:
+            frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        else:
+            frame_bgr = frame
+        
+        # 调整大小（如果需要）
+        if frame_bgr.shape[:2][::-1] != self.frame_size:
+            frame_bgr = cv2.resize(frame_bgr, self.frame_size)
+        
+        self.video_writer.write(frame_bgr)
+        self.frame_count += 1
+    
+    def close(self):
+        """关闭视频录制器"""
+        # 停止后台录制线程
+        if self.recording:
+            self.recording = False
+            if self.record_thread is not None:
+                self.record_thread.join(timeout=2.0)
+        
+        # 释放视频写入器
+        if self.video_writer is not None:
+            self.video_writer.release()
+            self.video_writer = None
+            print(f"\n[VideoRecorder] ✅ Video saved: {self.video_path}")
+            print(f"[VideoRecorder] Total frames: {self.frame_count}")
+            print(f"[VideoRecorder] Duration: {self.frame_count/self.fps:.2f}s")
+    
+    def __enter__(self):
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+        return False
+
+
 class ZMQDataSubscriber:
     """通过 ZMQ 从 ros_bridge.py 接收数据（解决 Python 版本兼容问题）
     
-    使用方法:
-        1. 先用系统 Python 运行 ros_bridge.py
-           /usr/bin/python3 ros_bridge.py
-        
-        2. 再运行 PI0 测试
-           ./run_test_pi0.sh zmq
+    使用后台线程持续接收，确保 receive() 总是获取最新帧并解决多线程竞争问题。
     """
     
     def __init__(self, host="localhost", port=5555, timeout_ms=5000):
@@ -846,15 +993,63 @@ class ZMQDataSubscriber:
         
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.SUB)
+        
+        # 使用 CONFLATE 确保只保留最新的一条消息（减少缓存积压导致的延迟）
+        # 注意：CONFLATE = 1 时，socket 会丢弃旧消息只留最新一条
+        try:
+            self.socket.setsockopt(zmq.CONFLATE, 1)
+        except:
+            pass
+            
         self.socket.connect(f"tcp://{host}:{port}")
-        self.socket.setsockopt_string(zmq.SUBSCRIBE, "")  # 订阅所有消息
+        self.socket.setsockopt_string(zmq.SUBSCRIBE, "")
         self.socket.setsockopt(zmq.RCVTIMEO, timeout_ms)
         
-        # 数据存储
-        self.data = None
-        self.last_receive_time = 0
+        # 线程安全的数据存储
+        self.latest_data = None
+        self.data_lock = threading.Lock()
+        self.running = True
+        self.receive_thread = threading.Thread(target=self._run_receive_loop, daemon=True)
+        self.receive_thread.start()
         
-        print("[ZMQSubscriber] Connected! Waiting for data from ros_bridge.py...")
+        self.last_receive_time = 0
+        print("[ZMQSubscriber] Connected and background thread started!")
+    
+    def _run_receive_loop(self):
+        """后台线程：持续从 ZMQ 接收数据并解码"""
+        import pickle
+        import cv2
+        while self.running:
+            try:
+                data_bytes = self.socket.recv()
+                data = pickle.loads(data_bytes)
+                
+                # 解码图像
+                head_rgb = self._decode_image(data.get('head_rgb'))
+                left_rgb = self._decode_image(data.get('left_rgb'))
+                right_rgb = self._decode_image(data.get('right_rgb'))
+                
+                # 获取关节数据
+                arm_left = np.array(data['arm_left']) if data.get('arm_left') else None
+                arm_right = np.array(data['arm_right']) if data.get('arm_right') else None
+                gripper_left = np.array(data['gripper_left']) if data.get('gripper_left') else None
+                gripper_right = np.array(data['gripper_right']) if data.get('gripper_right') else None
+                
+                # 线程安全地更新最新数据
+                with self.data_lock:
+                    self.latest_data = (
+                        head_rgb, left_rgb, right_rgb, 
+                        arm_left, arm_right, gripper_left, gripper_right
+                    )
+                self.last_receive_time = time.time()
+                
+            except zmq.Again:
+                # 超时通常表示 bridge 还没准备好或断开了
+                continue
+            except Exception as e:
+                if self.running:
+                    print(f"[ZMQSubscriber] Error in background thread: {e}")
+                time.sleep(0.1)
     
     def _decode_image(self, img_bytes):
         """解码 JPEG 图像"""
@@ -863,45 +1058,26 @@ class ZMQDataSubscriber:
         np_arr = np.frombuffer(img_bytes, np.uint8)
         img_bgr = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
         if img_bgr is not None:
+            # 统一调整尺寸
+            if img_bgr.shape[1] != 640 or img_bgr.shape[0] != 480:
+                img_bgr = cv2.resize(img_bgr, (640, 480))
             return cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         return None
     
     def receive(self):
-        """接收一帧数据
+        """获取最新的一帧数据
         
         Returns:
             tuple: (head_rgb, left_rgb, right_rgb, arm_left, arm_right, gripper_left, gripper_right)
-                   如果超时返回 None
+                   如果没有数据返回 None
         """
-        try:
-            import pickle
-            data_bytes = self.socket.recv()
-            data = pickle.loads(data_bytes)
-            
-            # 解码图像
-            head_rgb = self._decode_image(data.get('head_rgb'))
-            left_rgb = self._decode_image(data.get('left_rgb'))
-            right_rgb = self._decode_image(data.get('right_rgb'))
-            
-            # 获取关节数据
-            arm_left = np.array(data['arm_left']) if data.get('arm_left') else None
-            arm_right = np.array(data['arm_right']) if data.get('arm_right') else None
-            gripper_left = np.array(data['gripper_left']) if data.get('gripper_left') else None
-            gripper_right = np.array(data['gripper_right']) if data.get('gripper_right') else None
-            
-            self.last_receive_time = time.time()
-            
-            return head_rgb, left_rgb, right_rgb, arm_left, arm_right, gripper_left, gripper_right
-            
-        except zmq.Again:
-            print("[ZMQSubscriber] Timeout waiting for data. Is ros_bridge.py running?")
-            return None
-        except Exception as e:
-            print(f"[ZMQSubscriber] Error receiving data: {e}")
-            return None
+        with self.data_lock:
+            return self.latest_data
     
     def close(self):
         """关闭连接"""
+        self.running = False
+        time.sleep(0.1)
         self.socket.close()
         self.context.term()
 
@@ -998,9 +1174,9 @@ class ZMQCommandPublisher:
         """测试夹爪控制是否正常工作
         
         测试流程:
-        1. 发送夹爪值 0 (完全张开)
+        1. 发送夹爪值 0 (完全闭合)
         2. 等待用户确认
-        3. 发送夹爪值 100 (完全闭合)
+        3. 发送夹爪值 100 (完全打开)
         4. 等待用户确认
         
         Returns:
@@ -1013,8 +1189,8 @@ class ZMQCommandPublisher:
         print("The test will send commands to open and close both grippers.")
         print("")
         
-        # 测试1: 完全张开 (0)
-        print("📍 Test 1: Opening grippers (value = 0)")
+        # 测试1: 完全闭合 (0)
+        print("📍 Test 1: Closing grippers (value = 0)")
         print("   Sending command: left_gripper=0, right_gripper=0")
         success = self.send_command(
             left_joints=self.INIT_LEFT_JOINTS,
@@ -1028,15 +1204,15 @@ class ZMQCommandPublisher:
             return False
         
         print("   Command sent! Please check the robot.")
-        response = input("\n   Did the grippers OPEN? (yes/no): ").strip().lower()
+        response = input("\n   Did the grippers CLOSE? (yes/no): ").strip().lower()
         if response != 'yes':
-            print("❌ Gripper test FAILED - grippers did not open")
+            print("❌ Gripper test FAILED - grippers did not close")
             return False
         
         time.sleep(1.0)
         
-        # 测试2: 完全闭合 (100)
-        print("\n📍 Test 2: Closing grippers (value = 100)")
+        # 测试2: 完全打开 (100)
+        print("\n📍 Test 2: Opening grippers (value = 100)")
         print("   Sending command: left_gripper=100, right_gripper=100")
         success = self.send_command(
             left_joints=self.INIT_LEFT_JOINTS,
@@ -1050,9 +1226,9 @@ class ZMQCommandPublisher:
             return False
         
         print("   Command sent! Please check the robot.")
-        response = input("\n   Did the grippers CLOSE? (yes/no): ").strip().lower()
+        response = input("\n   Did the grippers OPEN? (yes/no): ").strip().lower()
         if response != 'yes':
-            print("❌ Gripper test FAILED - grippers did not close")
+            print("❌ Gripper test FAILED - grippers did not open")
             return False
         
         print("\n" + "="*70)
@@ -1503,6 +1679,9 @@ def main():
         
         zmq_sub = ZMQDataSubscriber(host=args.zmq_host, port=args.zmq_port)
         
+        # 视频录制器（稍后初始化，在实际开始执行后）
+        video_recorder = None
+        
         # 命令发布器
         cmd_pub = None
         if args.publish_command:
@@ -1513,21 +1692,21 @@ def main():
                 print(f"[Main] Confirm mode: Will ask for confirmation before each batch")
             cmd_pub = ZMQCommandPublisher(host=args.zmq_host, port=args.cmd_port)
             
-            # 测试夹爪控制
-            print(f"\n[Main] Testing gripper control before starting...")
-            gripper_test_passed = cmd_pub.test_gripper_control()
-            if not gripper_test_passed:
-                print("[Main] ❌ Gripper test failed! Please check:")
-                print("        1. Is ros_bridge.py running?")
-                print("        2. Are the gripper control topics correct?")
-                print("        3. Is the robot controller responding?")
-                response = input("\n[Main] Continue anyway? (yes/no): ").strip().lower()
-                if response != 'yes':
-                    print("[Main] Aborting...")
-                    zmq_sub.close()
-                    cmd_pub.close()
-                    log_file.close()
-                    return
+            # # 测试夹爪控制
+            # print(f"\n[Main] Testing gripper control before starting...")
+            # gripper_test_passed = cmd_pub.test_gripper_control()
+            # if not gripper_test_passed:
+            #     print("[Main] ❌ Gripper test failed! Please check:")
+            #     print("        1. Is ros_bridge.py running?")
+            #     print("        2. Are the gripper control topics correct?")
+            #     print("        3. Is the robot controller responding?")
+            #     response = input("\n[Main] Continue anyway? (yes/no): ").strip().lower()
+            #     if response != 'yes':
+            #         print("[Main] Aborting...")
+            #         zmq_sub.close()
+            #         cmd_pub.close()
+            #         log_file.close()
+            #         return
             
             # 发送初始位置
             if args.init_robot:
@@ -1559,6 +1738,28 @@ def main():
                         print("Please type 'yes' to continue or 'no' to abort.")
                 
                 print("="*60)
+                
+                # 开始执行前重置模型，确保状态正确
+                model.reset()
+                time.sleep(0.5)  # 给后台线程一点时间获取真实最新的数据
+        
+        # 初始化视频录制器（在实际开始执行后）
+        print("\n[Main] 🎥 Starting video recording...")
+        video_recorder = VideoRecorder(output_dir="results", fps=15.0, zmq_subscriber=zmq_sub)
+        
+        # 设置Ctrl+C信号处理
+        def signal_handler(signum, frame):
+            print("\n\n[Main] 🛑 Ctrl+C detected! Cleaning up...")
+            if video_recorder is not None:
+                video_recorder.close()
+            zmq_sub.close()
+            if cmd_pub is not None:
+                cmd_pub.close()
+            log_file.close()
+            print("[Main] ✅ Cleanup complete. Exiting...")
+            sys.exit(0)
+        
+        signal.signal(signal.SIGINT, signal_handler)
         
         try:
             for step in range(args.n_iterations):
@@ -1570,13 +1771,21 @@ def main():
                 result = zmq_sub.receive()
                 if result is None:
                     print("[Main] No data received, retrying...")
+                    time.sleep(0.1)
                     continue
+                
+                # 检查数据是否太旧
+                if time.time() - zmq_sub.last_receive_time > 1.0:
+                    print(f"[Main] ⚠️ Warning: Stale data detected ({time.time() - zmq_sub.last_receive_time:.2f}s old)")
                 
                 head_rgb, left_rgb, right_rgb, arm_left, arm_right, gripper_left, gripper_right = result
                 
                 if head_rgb is None or left_rgb is None or right_rgb is None:
                     print("[Main] Missing image data, skipping...")
                     continue
+                
+                # 注意：视频录制由后台线程处理，这里不需要手动写入
+                # video_recorder持续从zmq_sub接收并录制
                 
                 # 调试：验证 FK 计算
                 # if arm_left is not None and controller.ik_solver_left is not None:
@@ -1860,6 +2069,8 @@ def main():
                     if executed_count == 0:
                         print(f"\n[Main] ❌ No commands executed - all actions skipped or failed")
         finally:
+            if video_recorder is not None:
+                video_recorder.close()
             zmq_sub.close()
             if cmd_pub is not None:
                 cmd_pub.close()

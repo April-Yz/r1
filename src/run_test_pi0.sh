@@ -34,10 +34,10 @@ cd /home/pine/yzj/src
 # 模型配置
 TRAIN_CONFIG_NAME="R1_FFT_pour_35_0130_5k"
 CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/10000"
-PI0_STEP=30
+PI0_STEP=10
 ACTION_INDEX=5  # 从第2个action开始执行（跳过第1个action，索引从0开始）
-EXECUTE_STEPS=30  # 每次预测后执行多少步（应 <= PI0_STEP - ACTION_INDEX）
-EXECUTION_DELAY=3  # 执行完动作后等待多少秒再进行下一次预测
+EXECUTE_STEPS=10  # 每次预测后执行多少步（应 <= PI0_STEP - ACTION_INDEX）
+EXECUTION_DELAY=0.5  # 执行完动作后等待多少秒再进行下一次预测
 TASK_PROMPT="pour"
 N_ITERATIONS=10
 
