@@ -274,7 +274,7 @@ class IKSolver:
             if result is not None and result.success.cpu().numpy().all():
                 # 提取关节角度
                 solution_raw = result.solution.cpu().numpy()
-                print(f"[IKSolver] DEBUG: solution_raw shape = {solution_raw.shape}")
+                # print(f"[IKSolver] DEBUG: solution_raw shape = {solution_raw.shape}")
                 
                 # Curobo 返回 [batch_size, num_seeds, num_joints] 或 [batch_size, num_joints]
                 # 需要完全flatten成1维数组
@@ -283,7 +283,7 @@ class IKSolver:
                     return np.zeros(6), False
                 
                 joint_angles_full = solution_raw.flatten()  # 完全flatten成1维
-                print(f"[IKSolver] DEBUG: joint_angles_full shape = {joint_angles_full.shape}, value = {joint_angles_full}")
+                # print(f"[IKSolver] DEBUG: joint_angles_full shape = {joint_angles_full.shape}, value = {joint_angles_full}")
                 
                 # 确保至少有 4 个关节（torso）
                 if len(joint_angles_full) < 4:
@@ -291,7 +291,7 @@ class IKSolver:
                     return np.zeros(6), False
                 
                 joint_angles = joint_angles_full[4:]  # 只返回手臂关节（跳过 torso）
-                print(f"[IKSolver] DEBUG: joint_angles (arm only) shape = {joint_angles.shape}")
+                # print(f"[IKSolver] DEBUG: joint_angles (arm only) shape = {joint_angles.shape}")
                 
                 # 如果手臂关节不足 6 个，返回失败
                 if len(joint_angles) < 6:
@@ -1376,6 +1376,20 @@ def main():
     
     args = parser.parse_args()
     
+    # 创建日志目录和文件
+    log_dir = "/home/pine/yzj/src/logs"
+    os.makedirs(log_dir, exist_ok=True)
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    log_file_path = os.path.join(log_dir, f"eepose_log_{timestamp}.txt")
+    log_file = open(log_file_path, 'w')
+    log_file.write(f"EEPOSE LOG - {timestamp}\n")
+    log_file.write(f"Task: {args.task_prompt}\n")
+    log_file.write(f"Model: {args.train_config_name}\n")
+    log_file.write(f"Checkpoint: {args.checkpoint_path}\n")
+    log_file.write(f"Format: Frame_idx | Action_idx | Left(x,y,z,rx,ry,rz,gripper) | Right(x,y,z,rx,ry,rz,gripper) | Delta_L | Delta_R\n")
+    log_file.write("="*120 + "\n\n")
+    print(f"\n📝 Logging to: {log_file_path}")
+    
     # 初始化模型
     print("\n" + "="*60)
     print("Initializing PI0 Model...")
@@ -1483,19 +1497,19 @@ def main():
                     continue
                 
                 # 调试：验证 FK 计算
-                if arm_left is not None and controller.ik_solver_left is not None:
-                    fk_pos, _, fk_euler = controller.ik_solver_left.forward_kinematics(arm_left[:6])
-                    print(f"\n[DEBUG] FK Verification for LEFT arm:")
-                    print(f"    Current joints: {list(arm_left[:6])}")
-                    print(f"    FK position:    {fk_pos}")
-                    print(f"    FK euler(zyx):  {fk_euler}")
-                
-                if arm_right is not None and controller.ik_solver_right is not None:
-                    fk_pos, _, fk_euler = controller.ik_solver_right.forward_kinematics(arm_right[:6])
-                    print(f"[DEBUG] FK Verification for RIGHT arm:")
-                    print(f"    Current joints: {list(arm_right[:6])}")
-                    print(f"    FK position:    {fk_pos}")
-                    print(f"    FK euler(zyx):  {fk_euler}")
+                # if arm_left is not None and controller.ik_solver_left is not None:
+                #     fk_pos, _, fk_euler = controller.ik_solver_left.forward_kinematics(arm_left[:6])
+                #     print(f"\n[DEBUG] FK Verification for LEFT arm:")
+                #     print(f"    Current joints: {list(arm_left[:6])}")
+                #     print(f"    FK position:    {fk_pos}")
+                #     print(f"    FK euler(zyx):  {fk_euler}")
+                # 
+                # if arm_right is not None and controller.ik_solver_right is not None:
+                #     fk_pos, _, fk_euler = controller.ik_solver_right.forward_kinematics(arm_right[:6])
+                #     print(f"[DEBUG] FK Verification for RIGHT arm:")
+                #     print(f"    Current joints: {list(arm_right[:6])}")
+                #     print(f"    FK position:    {fk_pos}")
+                #     print(f"    FK euler(zyx):  {fk_euler}")
                 
                 # 运行推理
                 actions = controller.run_single_inference(
@@ -1566,16 +1580,57 @@ def main():
                     print(f"\n📋 PROCESSING ACTIONS:")
                     print("-"*60)
                     
+                    # 写入当前帧的标记到日志
+                    log_file.write(f"\n{'='*80}\n")
+                    log_file.write(f"FRAME {step + 1}/{args.n_iterations}\n")
+                    log_file.write(f"{'='*80}\n\n")
+                    
                     # 逐个处理动作
                     for action_idx in range(execute_steps):
                         action = actions[action_idx]
+                        
+                        # 提取左右手的eepose（从action中）
+                        left_eepose = action[:7]   # [x, y, z, rx, ry, rz, gripper]
+                        right_eepose = action[7:14]
+                        
+                        # 计算eepose变化量
+                        if prev_action is not None:
+                            delta_left_eepose = left_eepose - prev_action[:7]
+                            delta_right_eepose = right_eepose - prev_action[7:14]
+                            delta_left_pos_norm = np.linalg.norm(delta_left_eepose[:3])
+                            delta_right_pos_norm = np.linalg.norm(delta_right_eepose[:3])
+                        else:
+                            delta_left_eepose = np.zeros(7)
+                            delta_right_eepose = np.zeros(7)
+                            delta_left_pos_norm = 0.0
+                            delta_right_pos_norm = 0.0
+                        
+                        # 输出eepose到终端
+                        print(f"\n  Action {action_idx} EEPOSE:")
+                        print(f"    Left:  pos=[{left_eepose[0]:.4f}, {left_eepose[1]:.4f}, {left_eepose[2]:.4f}], " 
+                              f"euler=[{left_eepose[3]:.4f}, {left_eepose[4]:.4f}, {left_eepose[5]:.4f}], gripper={left_eepose[6]:.4f}")
+                        print(f"    Right: pos=[{right_eepose[0]:.4f}, {right_eepose[1]:.4f}, {right_eepose[2]:.4f}], "
+                              f"euler=[{right_eepose[3]:.4f}, {right_eepose[4]:.4f}, {right_eepose[5]:.4f}], gripper={right_eepose[6]:.4f}")
+                        print(f"    Δ Left  pos: {delta_left_pos_norm:.6f} m")
+                        print(f"    Δ Right pos: {delta_right_pos_norm:.6f} m")
+                        
+                        # 写入日志文件
+                        log_file.write(f"Action {action_idx}:\n")
+                        log_file.write(f"  Left:  [{left_eepose[0]:.6f}, {left_eepose[1]:.6f}, {left_eepose[2]:.6f}, "
+                                      f"{left_eepose[3]:.6f}, {left_eepose[4]:.6f}, {left_eepose[5]:.6f}, {left_eepose[6]:.6f}]\n")
+                        log_file.write(f"  Right: [{right_eepose[0]:.6f}, {right_eepose[1]:.6f}, {right_eepose[2]:.6f}, "
+                                      f"{right_eepose[3]:.6f}, {right_eepose[4]:.6f}, {right_eepose[5]:.6f}, {right_eepose[6]:.6f}]\n")
+                        log_file.write(f"  Delta Left:  pos={delta_left_pos_norm:.6f} m, "
+                                      f"euler={np.linalg.norm(delta_left_eepose[3:6]):.6f} rad, gripper={delta_left_eepose[6]:.6f}\n")
+                        log_file.write(f"  Delta Right: pos={delta_right_pos_norm:.6f} m, "
+                                      f"euler={np.linalg.norm(delta_right_eepose[3:6]):.6f} rad, gripper={delta_right_eepose[6]:.6f}\n\n")
                         
                         # IK 求解
                         left_joints, left_gripper_raw, right_joints, right_gripper_raw, success = \
                             controller.action_to_robot_command(action)
                         
-                        print(f"[DEBUG] Action {action_idx}: left_joints type={type(left_joints)}, shape={np.array(left_joints).shape if left_joints is not None else 'None'}")
-                        print(f"[DEBUG] Action {action_idx}: right_joints type={type(right_joints)}, shape={np.array(right_joints).shape if right_joints is not None else 'None'}")
+                        # print(f"[DEBUG] Action {action_idx}: left_joints type={type(left_joints)}, shape={np.array(left_joints).shape if left_joints is not None else 'None'}")
+                        # print(f"[DEBUG] Action {action_idx}: right_joints type={type(right_joints)}, shape={np.array(right_joints).shape if right_joints is not None else 'None'}")
                         
                         left_ok, right_ok = success[0], success[1]
                         left_valid, right_valid = True, True
@@ -1698,6 +1753,9 @@ def main():
                     print(f"✅ STREAMING EXECUTION COMPLETE")
                     print(f"    Executed: {executed_count}/{execute_steps}")
                     print(f"    Skipped:  {skipped_count}/{execute_steps}")
+                    
+                    # 刷新日志文件
+                    log_file.flush()
                     if ik_fail_count > 0:
                         print(f"    ⚠️ IK failures: {ik_fail_count} (used fallback)")
                     print("="*60)
@@ -1714,6 +1772,7 @@ def main():
             zmq_sub.close()
             if cmd_pub is not None:
                 cmd_pub.close()
+            # ZMQ模式在finally中不关闭log，留到main最后统一关闭
     
     elif args.bag_file:
         # 从 rosbag 文件读取数据
@@ -1861,8 +1920,12 @@ def main():
     
     else:
         print("\n[Main] Please specify --bag_file, --ros_mode, or --dummy_mode")
+        log_file.close()
         return
     
+    # 关闭日志文件
+    log_file.close()
+    print(f"\n📝 Log saved to: {log_file_path}")
     print("\n[Main] Test completed!")
 
 
