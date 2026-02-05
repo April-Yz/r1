@@ -276,12 +276,13 @@ class IKSolver:
                 solution_raw = result.solution.cpu().numpy()
                 print(f"[IKSolver] DEBUG: solution_raw shape = {solution_raw.shape}")
                 
-                # Curobo 返回 [batch_size, num_joints]
+                # Curobo 返回 [batch_size, num_seeds, num_joints] 或 [batch_size, num_joints]
+                # 需要完全flatten成1维数组
                 if solution_raw.shape[0] == 0:
                     print(f"[IKSolver] Error: Empty solution returned")
                     return np.zeros(6), False
                 
-                joint_angles_full = solution_raw[0]  # 取第一个 batch
+                joint_angles_full = solution_raw.flatten()  # 完全flatten成1维
                 print(f"[IKSolver] DEBUG: joint_angles_full shape = {joint_angles_full.shape}, value = {joint_angles_full}")
                 
                 # 确保至少有 4 个关节（torso）
