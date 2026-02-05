@@ -994,6 +994,72 @@ class ZMQCommandPublisher:
             print(f"[ZMQCommandPub] Error sending command: {e}")
             return False
     
+    def test_gripper_control(self):
+        """测试夹爪控制是否正常工作
+        
+        测试流程:
+        1. 发送夹爪值 0 (完全张开)
+        2. 等待用户确认
+        3. 发送夹爪值 100 (完全闭合)
+        4. 等待用户确认
+        
+        Returns:
+            bool: 用户确认测试通过返回True, 否则False
+        """
+        print("\n" + "="*70)
+        print("🧪 GRIPPER CONTROL TEST")
+        print("="*70)
+        print("\nThis test will verify that gripper control is working properly.")
+        print("The test will send commands to open and close both grippers.")
+        print("")
+        
+        # 测试1: 完全张开 (0)
+        print("📍 Test 1: Opening grippers (value = 0)")
+        print("   Sending command: left_gripper=0, right_gripper=0")
+        success = self.send_command(
+            left_joints=self.INIT_LEFT_JOINTS,
+            left_gripper_raw=0.0,
+            right_joints=self.INIT_RIGHT_JOINTS,
+            right_gripper_raw=0.0
+        )
+        
+        if not success:
+            print("❌ Failed to send command!")
+            return False
+        
+        print("   Command sent! Please check the robot.")
+        response = input("\n   Did the grippers OPEN? (yes/no): ").strip().lower()
+        if response != 'yes':
+            print("❌ Gripper test FAILED - grippers did not open")
+            return False
+        
+        time.sleep(1.0)
+        
+        # 测试2: 完全闭合 (100)
+        print("\n📍 Test 2: Closing grippers (value = 100)")
+        print("   Sending command: left_gripper=100, right_gripper=100")
+        success = self.send_command(
+            left_joints=self.INIT_LEFT_JOINTS,
+            left_gripper_raw=100.0,
+            right_joints=self.INIT_RIGHT_JOINTS,
+            right_gripper_raw=100.0
+        )
+        
+        if not success:
+            print("❌ Failed to send command!")
+            return False
+        
+        print("   Command sent! Please check the robot.")
+        response = input("\n   Did the grippers CLOSE? (yes/no): ").strip().lower()
+        if response != 'yes':
+            print("❌ Gripper test FAILED - grippers did not close")
+            return False
+        
+        print("\n" + "="*70)
+        print("✅ GRIPPER CONTROL TEST PASSED")
+        print("="*70)
+        return True
+    
     def send_init_position(self, wait_for_confirm=True):
         """发送初始位置命令
         
@@ -1446,6 +1512,22 @@ def main():
             if args.confirm_each_command:
                 print(f"[Main] Confirm mode: Will ask for confirmation before each batch")
             cmd_pub = ZMQCommandPublisher(host=args.zmq_host, port=args.cmd_port)
+            
+            # 测试夹爪控制
+            print(f"\n[Main] Testing gripper control before starting...")
+            gripper_test_passed = cmd_pub.test_gripper_control()
+            if not gripper_test_passed:
+                print("[Main] ❌ Gripper test failed! Please check:")
+                print("        1. Is ros_bridge.py running?")
+                print("        2. Are the gripper control topics correct?")
+                print("        3. Is the robot controller responding?")
+                response = input("\n[Main] Continue anyway? (yes/no): ").strip().lower()
+                if response != 'yes':
+                    print("[Main] Aborting...")
+                    zmq_sub.close()
+                    cmd_pub.close()
+                    log_file.close()
+                    return
             
             # 发送初始位置
             if args.init_robot:

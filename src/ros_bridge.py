@@ -32,6 +32,7 @@ os.environ.setdefault('ROS_IP', '192.168.123.15')
 import rospy
 from sensor_msgs.msg import CompressedImage, JointState
 from std_msgs.msg import Float64MultiArray
+from std_msgs.msg import Float32
 import cv2
 
 # ZMQ 设置
@@ -127,10 +128,14 @@ class ROSBridge:
             self.CONTROL_TOPICS['arm_left'], JointState, queue_size=1)
         self.arm_right_pub = rospy.Publisher(
             self.CONTROL_TOPICS['arm_right'], JointState, queue_size=1)
+        # self.gripper_left_pub = rospy.Publisher(
+        #     self.CONTROL_TOPICS['gripper_left'], JointState, queue_size=1)
+        # self.gripper_right_pub = rospy.Publisher(
+        #     self.CONTROL_TOPICS['gripper_right'], JointState, queue_size=1)
         self.gripper_left_pub = rospy.Publisher(
-            self.CONTROL_TOPICS['gripper_left'], JointState, queue_size=1)
+            self.CONTROL_TOPICS['gripper_left'], Float32, queue_size=1)
         self.gripper_right_pub = rospy.Publisher(
-            self.CONTROL_TOPICS['gripper_right'], JointState, queue_size=1)
+            self.CONTROL_TOPICS['gripper_right'], Float32, queue_size=1)
         
         print("[ROSBridge] Ready! Waiting for data...")
 
@@ -298,16 +303,19 @@ class ROSBridge:
             
             # 发布左夹爪
             if cmd.get('gripper_left') is not None:
-                msg = JointState()
-                msg.header.stamp = rospy.Time.now()
-                msg.position = [cmd['gripper_left']]  # 0-100
+                # msg = JointState()
+                msg = Float32()
+                # msg.header.stamp = rospy.Time.now()
+                msg.data = cmd['gripper_left']  # 0-100
+                print(f"[ROSBridge] Left gripper command: {msg.data}")
                 self.gripper_left_pub.publish(msg)
             
             # 发布右夹爪
             if cmd.get('gripper_right') is not None:
-                msg = JointState()
-                msg.header.stamp = rospy.Time.now()
-                msg.position = [cmd['gripper_right']]  # 0-100
+                msg = Float32()
+                # msg.header.stamp = rospy.Time.now()
+                msg.data = cmd['gripper_right']  # 0-100
+                print(f"[ROSBridge] Right gripper command: {msg.data}")
                 self.gripper_right_pub.publish(msg)
             
             self.cmd_count += 1

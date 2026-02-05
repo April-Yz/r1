@@ -1,0 +1,7 @@
+EEPOSE LOG - 20260205_154539
+Task: pour
+Model: R1_FFT_pour_35_0130_5k
+Checkpoint: /home/pine/yzj/RoboTwin/policy/pi0/checkpoint/10000
+Format: Frame_idx | Action_idx | Left(x,y,z,rx,ry,rz,gripper) | Right(x,y,z,rx,ry,rz,gripper) | Delta_L | Delta_R
+========================================================================================================================
+
