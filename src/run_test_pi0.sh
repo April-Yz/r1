@@ -36,7 +36,7 @@ TRAIN_CONFIG_NAME="R1_FFT_pour_35_0130_5k"
 CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/10000"
 PI0_STEP=30
 EXECUTE_STEPS=30  # 每次预测后执行多少步（应 <= PI0_STEP）
-EXECUTION_DELAY=0.1  # 执行完动作后等待多少秒再进行下一次预测
+EXECUTION_DELAY=1  # 执行完动作后等待多少秒再进行下一次预测
 TASK_PROMPT="pour"
 N_ITERATIONS=10
 
