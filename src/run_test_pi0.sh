@@ -35,8 +35,9 @@ cd /home/pine/yzj/src
 TRAIN_CONFIG_NAME="R1_FFT_pour_35_0130_5k"
 CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/10000"
 PI0_STEP=30
-EXECUTE_STEPS=30  # 每次预测后执行多少步（应 <= PI0_STEP）
-EXECUTION_DELAY=1  # 执行完动作后等待多少秒再进行下一次预测
+ACTION_INDEX=1  # 从第2个action开始执行（跳过第1个action，索引从0开始）
+EXECUTE_STEPS=30  # 每次预测后执行多少步（应 <= PI0_STEP - ACTION_INDEX）
+EXECUTION_DELAY=0.2  # 执行完动作后等待多少秒再进行下一次预测
 TASK_PROMPT="pour"
 N_ITERATIONS=10
 
@@ -204,7 +205,7 @@ case ${MODE} in
         echo "IMPORTANT: First run ros_bridge.py in another terminal:"
         echo "  /usr/bin/python3 /home/pine/yzj/src/ros_bridge.py"
         echo ""
-        echo "Prediction: ${PI0_STEP} steps, Execute: ${EXECUTE_STEPS} steps"
+        echo "Prediction: ${PI0_STEP} steps, Execute: ${EXECUTE_STEPS} steps (starting from action ${ACTION_INDEX})"
         echo ""
         echo "Control topics:"
         echo "  /motion_target/target_joint_state_arm_left"
@@ -219,6 +220,7 @@ case ${MODE} in
             --train_config_name ${TRAIN_CONFIG_NAME} \
             --checkpoint_path ${CHECKPOINT_PATH} \
             --pi0_step ${PI0_STEP} \
+            --action_index ${ACTION_INDEX} \
             --execute_steps ${EXECUTE_STEPS} \
             --execution_delay ${EXECUTION_DELAY} \
             --task_prompt "${TASK_PROMPT}" \
@@ -236,11 +238,11 @@ case ${MODE} in
         echo "IMPORTANT: First run ros_bridge.py in another terminal:"
         echo "  /usr/bin/python3 /home/pine/yzj/src/ros_bridge.py"
         echo ""
-        echo "Prediction: ${PI0_STEP} steps, Execute: ${EXECUTE_STEPS} steps"
+        echo "Prediction: ${PI0_STEP} steps, Execute: ${EXECUTE_STEPS} steps (starting from action ${ACTION_INDEX})"
         echo ""
         echo "This mode will:"
         echo "  1. Send init position → wait for 'yes' to start"
-        echo "  2. Execute ${EXECUTE_STEPS} actions per prediction"
+        echo "  2. Execute ${EXECUTE_STEPS} actions per prediction (starting from action ${ACTION_INDEX})"
         echo "  3. Before each batch → show info + wait for ENTER"
         echo ""
         echo "Control topics:"
@@ -256,6 +258,7 @@ case ${MODE} in
             --train_config_name ${TRAIN_CONFIG_NAME} \
             --checkpoint_path ${CHECKPOINT_PATH} \
             --pi0_step ${PI0_STEP} \
+            --action_index ${ACTION_INDEX} \
             --execute_steps ${EXECUTE_STEPS} \
             --execution_delay ${EXECUTION_DELAY} \
             --task_prompt "${TASK_PROMPT}" \
@@ -274,11 +277,11 @@ case ${MODE} in
         echo "IMPORTANT: First run ros_bridge.py in another terminal:"
         echo "  /usr/bin/python3 /home/pine/yzj/src/ros_bridge.py"
         echo ""
-        echo "Prediction: ${PI0_STEP} steps, Execute: ${EXECUTE_STEPS} steps"
+        echo "Prediction: ${PI0_STEP} steps, Execute: ${EXECUTE_STEPS} steps (starting from action ${ACTION_INDEX})"
         echo ""
         echo "This mode will:"
         echo "  1. Send init position → wait for 'yes' to start"
-        echo "  2. Execute ${EXECUTE_STEPS} actions per prediction"
+        echo "  2. Execute ${EXECUTE_STEPS} actions per prediction (starting from action ${ACTION_INDEX})"
         echo "  3. AUTO EXECUTE if delta_action < 0.05 AND delta_joint < 0.2"
         echo "  4. Otherwise ask for ENTER confirmation"
         echo ""
@@ -295,6 +298,7 @@ case ${MODE} in
             --train_config_name ${TRAIN_CONFIG_NAME} \
             --checkpoint_path ${CHECKPOINT_PATH} \
             --pi0_step ${PI0_STEP} \
+            --action_index ${ACTION_INDEX} \
             --execute_steps ${EXECUTE_STEPS} \
             --execution_delay ${EXECUTION_DELAY} \
             --task_prompt "${TASK_PROMPT}" \

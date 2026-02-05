@@ -76,9 +76,6 @@ class ROSBridge:
     }
     
     def __init__(self, data_port=5555, cmd_port=5556, use_fallback=False):
-        # 选择使用原始topic还是降频topic
-        self.READ_TOPICS = self.READ_TOPICS_FALLBACK if use_fallback else self.READ_TOPICS_PRIMARY
-        
         # ZMQ 设置 - 数据发布
         self.context = zmq.Context()
         self.data_socket = self.context.socket(zmq.PUB)
@@ -92,6 +89,14 @@ class ROSBridge:
         self.cmd_socket.setsockopt(zmq.RCVTIMEO, 10)  # 10ms 超时
         print(f"[ROSBridge] ZMQ command receiver started on port {cmd_port}")
         
+        # 初始化 ROS
+        print("[ROSBridge] Initializing ROS node...")
+        rospy.init_node('ros_bridge_node', anonymous=True)
+        
+        # 自动检测并选择topic
+        print("[ROSBridge] Auto-detecting available topics...")
+        self.READ_TOPICS = self._select_topics(force_fallback=use_fallback)
+        
         # 数据存储
         self.data = {key: None for key in self.READ_TOPICS.keys()}
         self.last_update = {key: 0 for key in self.READ_TOPICS.keys()}
@@ -99,13 +104,8 @@ class ROSBridge:
         # 命令计数
         self.cmd_count = 0
         
-        # 初始化 ROS
-        print("[ROSBridge] Initializing ROS node...")
-        rospy.init_node('ros_bridge_node', anonymous=True)
-        
         # 订阅读取话题
-        topic_mode = "fallback (low freq)" if use_fallback else "primary (high freq)"
-        print(f"[ROSBridge] Subscribing to read topics ({topic_mode})...")
+        print(f"[ROSBridge] Subscribing to selected topics...")
         rospy.Subscriber(self.READ_TOPICS['head_rgb'], CompressedImage, 
                         lambda msg: self._image_callback(msg, 'head_rgb'))
         rospy.Subscriber(self.READ_TOPICS['left_rgb'], CompressedImage,
@@ -133,6 +133,84 @@ class ROSBridge:
             self.CONTROL_TOPICS['gripper_right'], JointState, queue_size=1)
         
         print("[ROSBridge] Ready! Waiting for data...")
+
+    
+    def _select_topics(self, force_fallback=False):
+        """自动检测并选择可用的topics
+        
+        Args:
+            force_fallback: 如果为True，强制使用fallback topics
+            
+        Returns:
+            dict: 选中的topic配置
+        """
+        import time
+        
+        # 等待ROS master启动
+        timeout = 5.0
+        start_time = time.time()
+        while not rospy.is_shutdown() and time.time() - start_time < timeout:
+            try:
+                rospy.get_published_topics()
+                break
+            except:
+                time.sleep(0.1)
+        
+        # 获取当前所有可用的topics
+        try:
+            available_topics = [topic for topic, _ in rospy.get_published_topics()]
+        except Exception as e:
+            print(f"[ROSBridge] Warning: Could not get published topics: {e}")
+            print(f"[ROSBridge] Falling back to PRIMARY topics")
+            return self.READ_TOPICS_PRIMARY.copy()
+        
+        print(f"[ROSBridge] Found {len(available_topics)} published topics")
+        
+        if force_fallback:
+            print(f"[ROSBridge] Force using FALLBACK (low freq) topics")
+            return self.READ_TOPICS_FALLBACK.copy()
+        
+        # 检测每个数据类型的topic可用性
+        selected_topics = {}
+        warnings = []
+        
+        for key in self.READ_TOPICS_PRIMARY.keys():
+            primary_topic = self.READ_TOPICS_PRIMARY[key]
+            fallback_topic = self.READ_TOPICS_FALLBACK[key]
+            
+            # 优先使用primary（高频）
+            if primary_topic in available_topics:
+                selected_topics[key] = primary_topic
+                print(f"[ROSBridge] ✓ {key:15s} -> {primary_topic} (HIGH FREQ)")
+            # 如果primary不可用，使用fallback（低频）
+            elif fallback_topic in available_topics and fallback_topic != primary_topic:
+                selected_topics[key] = fallback_topic
+                warnings.append(key)
+                print(f"[ROSBridge] ⚠ {key:15s} -> {fallback_topic} (LOW FREQ - FALLBACK)")
+            # 两个都不可用，使用primary并警告
+            else:
+                selected_topics[key] = primary_topic
+                print(f"[ROSBridge] ✗ {key:15s} -> {primary_topic} (NOT FOUND - WILL WAIT)")
+        
+        # 如果有使用fallback的topic，发出警告
+        if warnings:
+            print(f"\n{'='*70}")
+            print(f"⚠️  WARNING: Using LOW FREQUENCY topics for: {', '.join(warnings)}")
+            print(f"⚠️  This may cause:")
+            print(f"    - Low state update rate")
+            print(f"    - Robot movement lag/oscillation")
+            print(f"    - Poor control performance")
+            print(f"")
+            print(f"💡 Solution:")
+            print(f"    For REAL-TIME INFERENCE: Don't run record_15hz.launch")
+            print(f"    For RECORDING DATA: Run record_15hz.launch (creates _low topics)")
+            print(f"{'='*70}\n")
+        else:
+            print(f"\n{'='*70}")
+            print(f"✅ Using HIGH FREQUENCY topics (optimal for real-time control)")
+            print(f"{'='*70}\n")
+        
+        return selected_topics
 
     
     def _image_callback(self, msg, key):
@@ -206,6 +284,7 @@ class ROSBridge:
             if cmd.get('arm_left') is not None:
                 msg = JointState()
                 msg.header.stamp = rospy.Time.now()
+                msg.velocity = [0.5] * len(cmd['arm_left'])  # 设置速度
                 msg.position = cmd['arm_left']
                 self.arm_left_pub.publish(msg)
             
@@ -213,6 +292,7 @@ class ROSBridge:
             if cmd.get('arm_right') is not None:
                 msg = JointState()
                 msg.header.stamp = rospy.Time.now()
+                msg.velocity = [0.5] * len(cmd['arm_right'])  # 设置速度    
                 msg.position = cmd['arm_right']
                 self.arm_right_pub.publish(msg)
             

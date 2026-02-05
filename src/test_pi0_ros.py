@@ -684,7 +684,7 @@ class PI0TestController:
     def run_single_inference(self, head_rgb, left_rgb, right_rgb, 
                             arm_left, arm_right, gripper_left, gripper_right,
                             task_prompt, print_only=True, show_joint_delta=False,
-                            gt_action=None, compare_gt=False, log_file=None):
+                            gt_action=None, compare_gt=False):
         """运行单次推理
         
         Args:
@@ -700,39 +700,10 @@ class PI0TestController:
             show_joint_delta: 是否显示关节角度变化量（需要 compute_ik）
             gt_action: Ground truth action（用于比较，bag 模式）
             compare_gt: 是否比较预测与真实动作
-            log_file: 日志文件句柄（用于记录输入state）
             
         Returns:
             actions: 模型预测的动作序列
         """
-        # === 输出当前输入 STATE 信息 ===
-        print(f"\n" + "="*70)
-        print(f"📥 INPUT STATE FOR INFERENCE")
-        print("="*70)
-        
-        # 输出原始 joint 值
-        print(f"\n🤖 Raw Joint Values:")
-        if arm_left is not None:
-            gl_val = gripper_left[0] if hasattr(gripper_left, '__len__') else gripper_left
-            print(f"    Left  arm:     [{', '.join([f'{j:.4f}' for j in arm_left[:6]])}]")
-            print(f"    Left  gripper: {gl_val:.4f} (0-100 scale)")
-        if arm_right is not None:
-            gr_val = gripper_right[0] if hasattr(gripper_right, '__len__') else gripper_right
-            print(f"    Right arm:     [{', '.join([f'{j:.4f}' for j in arm_right[:6]])}]")
-            print(f"    Right gripper: {gr_val:.4f} (0-100 scale)")
-        
-        # 写入日志文件
-        if log_file is not None:
-            log_file.write(f"\nINPUT STATE (Raw Joints):\n")
-            if arm_left is not None:
-                gl_val = gripper_left[0] if hasattr(gripper_left, '__len__') else gripper_left
-                log_file.write(f"  Left  arm:     [{', '.join([f'{j:.6f}' for j in arm_left[:6]])}]\n")
-                log_file.write(f"  Left  gripper: {gl_val:.6f}\n")
-            if arm_right is not None:
-                gr_val = gripper_right[0] if hasattr(gripper_right, '__len__') else gripper_right
-                log_file.write(f"  Right arm:     [{', '.join([f'{j:.6f}' for j in arm_right[:6]])}]\n")
-                log_file.write(f"  Right gripper: {gr_val:.6f}\n")
-        
         # 保存当前关节角度用于计算 delta
         prev_joint_left = self.current_joint_left.copy() if self.current_joint_left is not None else None
         prev_joint_right = self.current_joint_right.copy() if self.current_joint_right is not None else None
@@ -741,22 +712,9 @@ class PI0TestController:
         
         # 计算状态向量
         state = self.compute_state_vector(arm_left, arm_right, gripper_left, gripper_right)
-        
-        # 输出fk后的eepose（即输入到模型的state）
-        print(f"\n🎯 FK Result (EEPose - Input to Model):")
-        print(f"    Left:  pos=[{state[0]:.4f}, {state[1]:.4f}, {state[2]:.4f}], "
-              f"euler=[{state[3]:.4f}, {state[4]:.4f}, {state[5]:.4f}], gripper={state[6]:.4f}")
-        print(f"    Right: pos=[{state[7]:.4f}, {state[8]:.4f}, {state[9]:.4f}], "
-              f"euler=[{state[10]:.4f}, {state[11]:.4f}, {state[12]:.4f}], gripper={state[13]:.4f}")
-        print("="*70)
-        
-        # 写入日志文件
-        if log_file is not None:
-            log_file.write(f"\nINPUT STATE (FK Result - EEPose):\n")
-            log_file.write(f"  Left:  pos=[{state[0]:.6f}, {state[1]:.6f}, {state[2]:.6f}], "
-                          f"euler=[{state[3]:.6f}, {state[4]:.6f}, {state[5]:.6f}], gripper={state[6]:.6f}\n")
-            log_file.write(f"  Right: pos=[{state[7]:.6f}, {state[8]:.6f}, {state[9]:.6f}], "
-                          f"euler=[{state[10]:.6f}, {state[11]:.6f}, {state[12]:.6f}], gripper={state[13]:.6f}\n\n")
+        print(f"\n[Controller] State vector (14 dims, format: xyz+euler+gripper):")
+        print(f"    Left:  pos={state[:3]}, euler={state[3:6]}, gripper={state[6]:.4f}")
+        print(f"    Right: pos={state[7:10]}, euler={state[10:13]}, gripper={state[13]:.4f}")
         
         # 设置语言指令
         if self.model.observation_window is None:
@@ -1559,20 +1517,27 @@ def main():
                     arm_left, arm_right, gripper_left, gripper_right,
                     args.task_prompt,
                     print_only=not args.compute_ik,
-                    show_joint_delta=args.show_joint_delta,
-                    log_file=log_file
+                    show_joint_delta=args.show_joint_delta
                 )
                 
                 # 发布控制命令 - 批量执行多步
-                if args.publish_command and cmd_pub is not None and len(actions) >= args.execute_steps:
+                if args.publish_command and cmd_pub is not None and len(actions) > args.action_index:
                     
-                    # 计算所有要执行的动作的 IK
-                    execute_steps = min(args.execute_steps, len(actions))
+                    # 计算执行范围：从 action_index 开始，执行 execute_steps 个动作
+                    start_idx = args.action_index
+                    end_idx = min(start_idx + args.execute_steps, len(actions))
+                    execute_steps = end_idx - start_idx
+                    
+                    if execute_steps <= 0:
+                        print(f"[Main] ⚠️  No actions to execute (action_index={start_idx} >= total_actions={len(actions)})")
+                        continue
+                    
                     # ============================================
                     # 流式执行：逐个计算IK并立即发送
                     # ============================================
                     print(f"\n" + "="*60)
-                    print(f"🚀 STREAMING EXECUTION - {execute_steps} actions")
+                    print(f"🚀 STREAMING EXECUTION - actions[{start_idx}:{end_idx}] ({execute_steps} actions)")
+                    print(f"    Total predicted: {len(actions)}, Starting from: {start_idx}, Executing: {execute_steps}")
                     print("="*60)
                     
                     # 显示当前状态
@@ -1629,7 +1594,8 @@ def main():
                     log_file.write(f"{'='*80}\n\n")
                     
                     # 逐个处理动作
-                    for action_idx in range(execute_steps):
+                    for i in range(execute_steps):
+                        action_idx = start_idx + i  # 实际的action索引
                         action = actions[action_idx]
                         
                         # 提取左右手的eepose（从action中）
@@ -1649,7 +1615,7 @@ def main():
                             delta_right_pos_norm = 0.0
                         
                         # 输出eepose到终端
-                        print(f"\n  Action {action_idx} EEPOSE:")
+                        print(f"\n  Action {action_idx} (exec #{i}) EEPOSE:")
                         print(f"    Left:  pos=[{left_eepose[0]:.4f}, {left_eepose[1]:.4f}, {left_eepose[2]:.4f}], " 
                               f"euler=[{left_eepose[3]:.4f}, {left_eepose[4]:.4f}, {left_eepose[5]:.4f}], gripper={left_eepose[6]:.4f}")
                         print(f"    Right: pos=[{right_eepose[0]:.4f}, {right_eepose[1]:.4f}, {right_eepose[2]:.4f}], "
