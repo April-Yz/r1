@@ -2,6 +2,9 @@
 # PI0 测试脚本 - 加载 checkpoint/10000 模型
 # 
 # 用法:
+# conda activate RoboTwin
+# source ../RoboTwin/policy/pi0/.venv/bin/activate
+# cd /home/pine/yzj/src
 #   1. 仅测试模型加载（dummy 模式）：
 #      ./run_test_pi0.sh dummy
 #
@@ -33,12 +36,17 @@ cd /home/pine/yzj/src
 
 # 模型配置
 TRAIN_CONFIG_NAME="R1_FFT_pour_35_0130_5k"
-CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/10000"
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/10000" # 35 pour[最早]
+# TASK_PROMPT="pour"
+CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pour_35_0208_lora/10000" # pnp 梨和香蕉  
+TASK_PROMPT="take apples and pears and put them on a plate"
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pour_112_0209_lora/10000" # pour 2 [112]
+# TASK_PROMPT="pour"
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/10000" 
 PI0_STEP=10
 ACTION_INDEX=5  # 从第2个action开始执行（跳过第1个action，索引从0开始）
 EXECUTE_STEPS=10  # 每次预测后执行多少步（应 <= PI0_STEP - ACTION_INDEX）
 EXECUTION_DELAY=0.5  # 执行完动作后等待多少秒再进行下一次预测
-TASK_PROMPT="pour"
 N_ITERATIONS=10
 
 # 检查参数

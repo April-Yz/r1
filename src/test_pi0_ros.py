@@ -1093,6 +1093,17 @@ class ZMQCommandPublisher:
     """
     
     # 初始位置配置
+    # 抬手位置（避免碰撞桌子的安全中间位置，6个关节）
+    LIFT_ARM_LEFT_JOINTS = np.array([
+        0.9693617021276596, 0.365531914893617, -0.24425531914893617,
+        2.7825531914893618, -0.02021276595744681, 0.17212765957446807
+    ], dtype=np.float32)
+    
+    LIFT_ARM_RIGHT_JOINTS = np.array([
+        -1.0529787234042554, 0.451063829787234, -0.38340425531914896,
+        -0.15723404255319148, 0.05127659574468085, -0.02872340425531915
+    ], dtype=np.float32)
+    
     # 左臂初始关节角度 (6个关节，发送时会追加无效夹爪值变成7维)
     INIT_LEFT_JOINTS = np.array([
         -0.16744680851063828, 2.0108510638297874, -0.6593617021276595,
@@ -1236,6 +1247,67 @@ class ZMQCommandPublisher:
         print("="*70)
         return True
     
+    def send_lift_arm_position(self, wait_for_confirm=True):
+        """发送抬手位置命令（避免碰撞的安全中间位置）
+        
+        将机器人移动到抬手位置，这是一个远离桌面的安全位置：
+        - 左臂: LIFT_ARM_LEFT_JOINTS (6个关节)
+        - 右臂: LIFT_ARM_RIGHT_JOINTS (6个关节)
+        - 夹爪: 保持当前状态（100 完全打开）
+        
+        Args:
+            wait_for_confirm: 是否等待用户确认
+            
+        Returns:
+            success: 是否成功发送
+        """
+        print("\n" + "="*60)
+        print("🤚 STEP 1: LIFT ARMS - MOVE TO SAFE POSITION")
+        print("="*60)
+        print(f"\nSafe Lift Position Configuration:")
+        print(f"  Left Arm Joints (6):  {list(self.LIFT_ARM_LEFT_JOINTS)}")
+        print(f"  Right Arm Joints (6): {list(self.LIFT_ARM_RIGHT_JOINTS)}")
+        print(f"  (Will send as 7-dim with invalid gripper={self.INVALID_GRIPPER_VALUE})")
+        print(f"  Left Gripper:  {self.INIT_GRIPPER_LEFT:.1f} (fully open)")
+        print(f"  Right Gripper: {self.INIT_GRIPPER_RIGHT:.1f} (fully open)")
+        print(f"\n⚠️  WARNING: The robot will lift arms to avoid collision!")
+        print(f"    This is a safety step before moving to init position.")
+        print(f"    Make sure the workspace is clear and safe.")
+        
+        if wait_for_confirm:
+            print("\n" + "-"*60)
+            while True:
+                user_input = input("Type 'yes' to LIFT ARMS, 'skip' to skip this step, or 'no' to abort: ").strip().lower()
+                if user_input == 'yes':
+                    print("-"*60)
+                    break
+                elif user_input == 'skip':
+                    print("\n⏭️  Skipped by user - will directly move to init position.")
+                    return "skipped"
+                elif user_input == 'no':
+                    print("\n❌ Aborted by user - lift arm NOT sent.")
+                    return False
+                else:
+                    print("Please type 'yes' to continue, 'skip' to skip this step, or 'no' to abort.")
+        
+        # 发送抬手位置命令
+        success = self.send_command(
+            left_joints=self.LIFT_ARM_LEFT_JOINTS,
+            left_gripper_raw=self.INIT_GRIPPER_LEFT,
+            right_joints=self.LIFT_ARM_RIGHT_JOINTS,
+            right_gripper_raw=self.INIT_GRIPPER_RIGHT
+        )
+        
+        if success:
+            print("\n✅ Lift arm command sent successfully!")
+            print("   Waiting for robot to reach safe lifted position...")
+            time.sleep(3.0)  # 等待机器人移动到位（抬手可能需要更长时间）
+            print("   Robot arms should now be lifted to safe position.")
+        else:
+            print("\n❌ Failed to send lift arm command!")
+        
+        return success
+    
     def send_init_position(self, wait_for_confirm=True):
         """发送初始位置命令
         
@@ -1255,7 +1327,7 @@ class ZMQCommandPublisher:
         right_joints_7 = list(self.INIT_RIGHT_JOINTS) + [self.INVALID_GRIPPER_VALUE]
         
         print("\n" + "="*60)
-        print("🤖 ROBOT INITIALIZATION - MOVE TO INITIAL POSITION")
+        print("🤖 STEP 2: MOVE TO INITIAL POSITION")
         print("="*60)
         print(f"\nInitial Position Configuration:")
         print(f"  Left Arm Joints (6):  {list(self.INIT_LEFT_JOINTS)}")
@@ -1263,13 +1335,13 @@ class ZMQCommandPublisher:
         print(f"  (Will send as 7-dim with invalid gripper={self.INVALID_GRIPPER_VALUE})")
         print(f"  Left Gripper:  {self.INIT_GRIPPER_LEFT:.1f} (fully open)")
         print(f"  Right Gripper: {self.INIT_GRIPPER_RIGHT:.1f} (fully open)")
-        print(f"\n⚠️  WARNING: The robot will move to the initial position!")
+        print(f"\n⚠️  WARNING: The robot will move from safe position to init position!")
         print(f"    Make sure the workspace is clear and safe.")
         
         if wait_for_confirm:
             print("\n" + "-"*60)
             while True:
-                user_input = input("Type 'yes' to send init position command (or 'no' to abort): ").strip().lower()
+                user_input = input("Type 'yes' to send INIT position command (or 'no' to abort): ").strip().lower()
                 if user_input == 'yes':
                     print("-"*60)
                     break
@@ -1708,8 +1780,19 @@ def main():
             #         log_file.close()
             #         return
             
-            # 发送初始位置
+            # 机器人初始化流程（两步：1.抬手 2.初始位置）
             if args.init_robot:
+                # Step 1: 抬手到安全位置（避免碰撞桌子）- 可跳过
+                lift_result = cmd_pub.send_lift_arm_position(wait_for_confirm=True)
+                if lift_result == False:
+                    print("[Main] Failed to send lift arm position, aborting...")
+                    zmq_sub.close()
+                    cmd_pub.close()
+                    return
+                elif lift_result == "skipped":
+                    print("[Main] ⏭️  Lift arm step skipped - will directly move to init position")
+                
+                # Step 2: 移动到初始位置
                 init_success = cmd_pub.send_init_position(wait_for_confirm=True)
                 if not init_success:
                     print("[Main] Failed to send initial position, aborting...")
@@ -1717,12 +1800,16 @@ def main():
                     cmd_pub.close()
                     return
                 
-                # 等待机器人移动到初始位置，然后用户输入 yes 确认
+                # 等待机器人稳定在初始位置，然后用户输入 yes 确认
                 print("\n" + "="*60)
-                print("🤖 WAITING FOR ROBOT TO REACH INITIAL POSITION")
+                print("✅ ROBOT INITIALIZATION COMPLETE")
                 print("="*60)
-                print("\nPlease wait for the robot to move to the initial position.")
-                print("Once the robot has stopped and is ready, type 'yes' to start PI0 control.\n")
+                print("\nRobot has completed the initialization sequence:")
+                if lift_result != "skipped":
+                    print("  ✓ Step 1: Arms lifted to safe position")
+                print("  ✓ Step 2: Moved to initial position")
+                print("\nPlease verify the robot is stable and ready.")
+                print("Once confirmed, type 'yes' to start PI0 control.\n")
                 
                 while True:
                     user_input = input("Type 'yes' to start PI0 control (or 'no' to abort): ").strip().lower()
@@ -1763,8 +1850,9 @@ def main():
         
         try:
             for step in range(args.n_iterations):
+                inference_num = step + 1
                 print(f"\n{'='*60}")
-                print(f"Frame {step + 1}/{args.n_iterations}")
+                print(f"🔄 INFERENCE #{inference_num}/{args.n_iterations}")
                 print("="*60)
                 
                 # 从 ZMQ 接收数据
@@ -1827,8 +1915,8 @@ def main():
                     # 流式执行：逐个计算IK并立即发送
                     # ============================================
                     print(f"\n" + "="*60)
-                    print(f"🚀 STREAMING EXECUTION - actions[{start_idx}:{end_idx}] ({execute_steps} actions)")
-                    print(f"    Total predicted: {len(actions)}, Starting from: {start_idx}, Executing: {execute_steps}")
+                    print(f"🚀 INFERENCE #{inference_num} - STREAMING EXECUTION")
+                    print(f"    Predicted actions: {len(actions)}, Executing: actions[{start_idx}:{end_idx}] ({execute_steps} steps)")
                     print("="*60)
                     
                     # 显示当前状态
@@ -1887,6 +1975,7 @@ def main():
                     # 逐个处理动作
                     for i in range(execute_steps):
                         action_idx = start_idx + i  # 实际的action索引
+                        exec_step_num = i + 1  # 执行步骤编号 (1-based)
                         action = actions[action_idx]
                         
                         # 提取左右手的eepose（从action中）
@@ -1906,7 +1995,7 @@ def main():
                             delta_right_pos_norm = 0.0
                         
                         # 输出eepose到终端
-                        print(f"\n  Action {action_idx} (exec #{i}) EEPOSE:")
+                        print(f"\n  📍 Step {exec_step_num}/{execute_steps} of Inference #{inference_num} (Action {action_idx})")
                         print(f"    Left:  pos=[{left_eepose[0]:.4f}, {left_eepose[1]:.4f}, {left_eepose[2]:.4f}], " 
                               f"euler=[{left_eepose[3]:.4f}, {left_eepose[4]:.4f}, {left_eepose[5]:.4f}], gripper={left_eepose[6]:.4f}")
                         print(f"    Right: pos=[{right_eepose[0]:.4f}, {right_eepose[1]:.4f}, {right_eepose[2]:.4f}], "
@@ -1915,7 +2004,7 @@ def main():
                         print(f"    Δ Right pos: {delta_right_pos_norm:.6f} m")
                         
                         # 写入日志文件
-                        log_file.write(f"Action {action_idx}:\n")
+                        log_file.write(f"Inference #{inference_num}, Step {exec_step_num}/{execute_steps} (Action {action_idx}):\n")
                         log_file.write(f"  Left:  [{left_eepose[0]:.6f}, {left_eepose[1]:.6f}, {left_eepose[2]:.6f}, "
                                       f"{left_eepose[3]:.6f}, {left_eepose[4]:.6f}, {left_eepose[5]:.6f}, {left_eepose[6]:.6f}]\n")
                         log_file.write(f"  Right: [{right_eepose[0]:.6f}, {right_eepose[1]:.6f}, {right_eepose[2]:.6f}, "
@@ -2008,7 +2097,7 @@ def main():
                                 print(f"    ⚠️  THRESHOLD: delta_action={delta_action_norm:.6f}, delta_joint={max_joint_delta:.6f}")
                                 # 超过阈值时，如果是确认模式则询问
                                 if args.confirm_each_command:
-                                    user_input = input(f"    Execute action {action_idx}? (ENTER=yes, 'skip'=no): ").strip().lower()
+                                    user_input = input(f"    Execute step {exec_step_num} of inference #{inference_num}? (ENTER=yes, 'skip'=no): ").strip().lower()
                                     if user_input == 'skip':
                                         should_send = False
                         
@@ -2050,9 +2139,9 @@ def main():
                     
                     # 执行完毕统计
                     print(f"\n" + "="*60)
-                    print(f"✅ STREAMING EXECUTION COMPLETE")
-                    print(f"    Executed: {executed_count}/{execute_steps}")
-                    print(f"    Skipped:  {skipped_count}/{execute_steps}")
+                    print(f"✅ INFERENCE #{inference_num} EXECUTION COMPLETE")
+                    print(f"    Executed: {executed_count}/{execute_steps} steps")
+                    print(f"    Skipped:  {skipped_count}/{execute_steps} steps")
                     
                     # 刷新日志文件
                     log_file.flush()
