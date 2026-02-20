@@ -1,0 +1,11 @@
+<launch>
+  <node name="thr_fb_arm_l" pkg="topic_tools" type="throttle" args="messages /hdas/feedback_arm_left 15.0 /hdas/feedback_arm_left_low" />
+  <node name="thr_fb_arm_r" pkg="topic_tools" type="throttle" args="messages /hdas/feedback_arm_right 15.0 /hdas/feedback_arm_right_low" />
+  <node name="thr_fb_grp_l" pkg="topic_tools" type="throttle" args="messages /hdas/feedback_gripper_left 15.0 /hdas/feedback_gripper_left_low" />
+  <node name="thr_fb_grp_r" pkg="topic_tools" type="throttle" args="messages /hdas/feedback_gripper_right 15.0 /hdas/feedback_gripper_right_low" />
+
+  <node name="thr_tgt_arm_l" pkg="topic_tools" type="throttle" args="messages /motion_target/target_joint_state_arm_left 15.0 /motion_target/target_joint_state_arm_left_low" />
+  <node name="thr_tgt_arm_r" pkg="topic_tools" type="throttle" args="messages /motion_target/target_joint_state_arm_right 15.0 /motion_target/target_joint_state_arm_right_low" />
+  <node name="thr_ctrl_grp_l" pkg="topic_tools" type="throttle" args="messages /motion_control/position_control_gripper_left 15.0 /motion_control/position_control_gripper_left_low" />
+  <node name="thr_ctrl_grp_r" pkg="topic_tools" type="throttle" args="messages /motion_control/position_control_gripper_right 15.0 /motion_control/position_control_gripper_right_low" />
+</launch>

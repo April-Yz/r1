@@ -35,14 +35,51 @@ export CUDA_VISIBLE_DEVICES=0
 cd /home/pine/yzj/src
 
 # 模型配置
-TRAIN_CONFIG_NAME="R1_FFT_pour_35_0130_5k"
-# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/10000" # 35 pour[最早]
+# TRAIN_CONFIG_NAME="R1_FFT_pour_35_0130_5k"
+TRAIN_CONFIG_NAME="R1_FT_lora_2cuda"
+# TRAIN_CONFIG_NAME="R1_FT_lora_1cuda"
+# 0130
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/pour_35_first/10000" # 35 pour[最早]
 # TASK_PROMPT="pour"
-CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pour_35_0208_lora/10000" # pnp 梨和香蕉  
-TASK_PROMPT="take apples and pears and put them on a plate"
-# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pour_112_0209_lora/10000" # pour 2 [112]
+# 0211
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pour_35_0208_lora/10000" # pnp 梨和香蕉  
+# TASK_PROMPT="take apples and pears and put them on a plate"
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pour_112_0209_lora/15000" # pour 2 [112]
 # TASK_PROMPT="pour"
-# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/10000" 
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_stack_cup_0210_48_lora/10000" 
+# TASK_PROMPT="stack cups"
+
+# 0213
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pnp_0212_59_lora/10000" # pnp 梨和香蕉  
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pnp_0212_59_lora/15000" # pnp 梨和香蕉  
+# TASK_PROMPT="take banana and pears and put them on a plate"
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pour_0212_48_lora/10000" 
+# TASK_PROMPT="pour"
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_stack_cup_0210_48_lora/10000" 
+# TASK_PROMPT="stack cups"
+
+# 0215
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_Full-FT_pnp_0212_55_lora/30000" # pnp 梨和香蕉 fft 
+# TASK_PROMPT="take banana and pears and put them on a plate"
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pour_0212_48_lora_2/30000" # 0% lora 30000 直接开始到水了
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pour_0212_48_lora_2/10000" # 0% lora  
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pour_0212_48_lora_2/15000" # 0% lora  
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pour_0212_48_lora_2/20000" 
+# TASK_PROMPT="pour"
+
+# 0218
+# 0215
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_stack_cup_0215_48_lora_2/10000" # stack cup
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_stack_cup_0215_48_lora_2/30000" # stack cup
+# TASK_PROMPT="stack cups"
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pnp_0212_55_lora_2/10000" # 
+CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pnp_0212_55_lora_2/30000" # 抓住了但是不懂往上提 
+TASK_PROMPT="take banana and pears and put them on a plate"
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pour_0212_48_lora_2/30000" # 0% lora 30000 直接开始到水了 
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/pi05_pour_50_0215/29999" # 0% lora   
+# TASK_PROMPT="pour"
+
+
 PI0_STEP=10
 ACTION_INDEX=5  # 从第2个action开始执行（跳过第1个action，索引从0开始）
 EXECUTE_STEPS=10  # 每次预测后执行多少步（应 <= PI0_STEP - ACTION_INDEX）
@@ -290,8 +327,7 @@ case ${MODE} in
         echo "This mode will:"
         echo "  1. Send init position → wait for 'yes' to start"
         echo "  2. Execute ${EXECUTE_STEPS} actions per prediction (starting from action ${ACTION_INDEX})"
-        echo "  3. AUTO EXECUTE if delta_action < 0.05 AND delta_joint < 0.2"
-        echo "  4. Otherwise ask for ENTER confirmation"
+        echo "  3. AUTO EXECUTE ALL actions (shows threshold info but executes anyway)"
         echo ""
         echo "Control topics:"
         echo "  /motion_target/target_joint_state_arm_left"
@@ -315,7 +351,6 @@ case ${MODE} in
             --compute_ik \
             --publish_command \
             --show_joint_delta \
-            --confirm_each_command \
             --auto_execute_threshold 0.10 \
             --auto_joint_threshold 0.2
         ;;

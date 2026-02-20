@@ -1690,6 +1690,25 @@ def main():
     
     args = parser.parse_args()
     
+    # 从 checkpoint_path 提取 checkpoint_id（路径最后的数字）
+    checkpoint_id = os.path.basename(args.checkpoint_path.rstrip('/'))
+    if not checkpoint_id.isdigit():
+        # 如果不是纯数字，尝试找最后一个数字部分
+        parts = args.checkpoint_path.rstrip('/').split('/')
+        for part in reversed(parts):
+            if part.isdigit():
+                checkpoint_id = part
+                break
+        else:
+            checkpoint_id = "unknown"
+    print(f"\n[Main] Extracted checkpoint_id: {checkpoint_id}")
+    
+    # 创建结果目录结构: results/{task_prompt}/{checkpoint_id}/
+    task_name_clean = args.task_prompt.replace(' ', '_').replace('/', '_')
+    result_dir = os.path.join("results", task_name_clean, checkpoint_id)
+    os.makedirs(result_dir, exist_ok=True)
+    print(f"[Main] Results will be saved to: {result_dir}")
+    
     # 创建日志目录和文件
     log_dir = "/home/pine/yzj/src/logs"
     os.makedirs(log_dir, exist_ok=True)
@@ -1700,6 +1719,8 @@ def main():
     log_file.write(f"Task: {args.task_prompt}\n")
     log_file.write(f"Model: {args.train_config_name}\n")
     log_file.write(f"Checkpoint: {args.checkpoint_path}\n")
+    log_file.write(f"Checkpoint ID: {checkpoint_id}\n")
+    log_file.write(f"Result Dir: {result_dir}\n")
     log_file.write(f"Format: Frame_idx | Action_idx | Left(x,y,z,rx,ry,rz,gripper) | Right(x,y,z,rx,ry,rz,gripper) | Delta_L | Delta_R\n")
     log_file.write("="*120 + "\n\n")
     print(f"\n📝 Logging to: {log_file_path}")
@@ -1832,7 +1853,7 @@ def main():
         
         # 初始化视频录制器（在实际开始执行后）
         print("\n[Main] 🎥 Starting video recording...")
-        video_recorder = VideoRecorder(output_dir="results", fps=15.0, zmq_subscriber=zmq_sub)
+        video_recorder = VideoRecorder(output_dir=result_dir, fps=15.0, zmq_subscriber=zmq_sub)
         
         # 设置Ctrl+C信号处理
         def signal_handler(signum, frame):
@@ -1871,6 +1892,22 @@ def main():
                 if head_rgb is None or left_rgb is None or right_rgb is None:
                     print("[Main] Missing image data, skipping...")
                     continue
+                
+                # 保存第一次inference的RGB观测图片
+                if step == 0:
+                    print("\n[Main] 💾 Saving first inference observations...")
+                    obs_dir = os.path.join(result_dir, "first_obs")
+                    os.makedirs(obs_dir, exist_ok=True)
+                    
+                    # 保存三个相机的RGB图像
+                    cv2.imwrite(os.path.join(obs_dir, "head_rgb.png"), cv2.cvtColor(head_rgb, cv2.COLOR_RGB2BGR))
+                    cv2.imwrite(os.path.join(obs_dir, "left_rgb.png"), cv2.cvtColor(left_rgb, cv2.COLOR_RGB2BGR))
+                    cv2.imwrite(os.path.join(obs_dir, "right_rgb.png"), cv2.cvtColor(right_rgb, cv2.COLOR_RGB2BGR))
+                    
+                    print(f"[Main] ✅ Saved observations to: {obs_dir}/")
+                    print(f"    - head_rgb.png  ({head_rgb.shape})")
+                    print(f"    - left_rgb.png  ({left_rgb.shape})")
+                    print(f"    - right_rgb.png ({right_rgb.shape})")
                 
                 # 注意：视频录制由后台线程处理，这里不需要手动写入
                 # video_recorder持续从zmq_sub接收并录制

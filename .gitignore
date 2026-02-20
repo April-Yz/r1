@@ -3,9 +3,12 @@ hand_0129/*
 *.rosbag
 openpi/*
 RoboTwin/*
+R1_urdf/*
 vis_head/*
 checkpoints/*
+checkpoint/*
 src/checkpoints/*
+src/checkpoint/*
 ckpt/*
 
 
@@ -44,7 +47,12 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
-
+*.mp4
+src/vis_head/*.mp4
+src/vis_head_0203/
+src/vis_head_0201/
+src/logs/*
+src/results/*
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
