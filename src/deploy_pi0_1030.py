@@ -241,18 +241,39 @@ class ZMQCommandPublisher:
         -0.15723404255319148, 0.05127659574468085, -0.02872340425531915
     ], dtype=np.float32)
 
-    # 初始关节角度
-    INIT_LEFT_JOINTS = np.array([
-        -0.6742553191489362, 2.656595744680851, -1.3061702127659574,
-        -0.0325531914893617, 1.4363829787234041, -1.2231914893617022,
-        -2.753191489361702
-    ], dtype=np.float32)
-    INIT_RIGHT_JOINTS = np.array([
-        0.6561702127659574, 2.3187234042553193, -1.1055319148936171,
-        0.19127659574468084, -1.4397872340425533, 0.9957446808510638,
-        -2.468936170212766
-    ], dtype=np.float32)
+    # 不同任务的初始关节角度
+    TASK_INIT_POSITIONS = {
+        "pour": {
+            "left": np.array([
+                -0.16744680851063828, 2.0108510638297874, -0.6593617021276595,
+                2.002127659574468, 0.39382978723404255, -1.7193617021276595
+            ], dtype=np.float32),
+            "right": np.array([
+                0.19234042553191488, 1.8925531914893616, -0.6874468085106383,
+                -1.6057446808510638, -0.10148936170212766, 1.3085106382978724
+            ], dtype=np.float32),
+            "gripper_left": 100.0,
+            "gripper_right": 100.0,
+        },
+        "pnp_apple_star": {
+            "left": np.array([
+                -0.6742553191489362, 2.656595744680851, -1.3061702127659574,
+                -0.0325531914893617, 1.4363829787234041, -1.2231914893617022,
+                -2.753191489361702
+            ], dtype=np.float32),
+            "right": np.array([
+                0.6561702127659574, 2.3187234042553193, -1.1055319148936171,
+                0.19127659574468084, -1.4397872340425533, 0.9957446808510638,
+                -2.468936170212766
+            ], dtype=np.float32),
+            "gripper_left": 100.0,
+            "gripper_right": 100.0,
+        },
+    }
 
+    # 默认使用 pour 的初始位置
+    INIT_LEFT_JOINTS = TASK_INIT_POSITIONS["pour"]["left"]
+    INIT_RIGHT_JOINTS = TASK_INIT_POSITIONS["pour"]["right"]
     INIT_GRIPPER_LEFT = 100.0
     INIT_GRIPPER_RIGHT = 100.0
     INVALID_GRIPPER_VALUE = -2.7
@@ -329,8 +350,24 @@ class ZMQCommandPublisher:
             time.sleep(3.0)
         return success
 
-    def send_init_position(self, wait_for_confirm=True):
-        """发送初始位置"""
+    def send_init_position(self, task="pour", wait_for_confirm=True):
+        """发送初始位置（根据任务选择）"""
+        # 根据 task 选择初始位置
+        task_key = self._match_task_key(task)
+        if task_key and task_key in self.TASK_INIT_POSITIONS:
+            init_cfg = self.TASK_INIT_POSITIONS[task_key]
+            left_joints = init_cfg["left"]
+            right_joints = init_cfg["right"]
+            left_gripper = init_cfg.get("gripper_left", 100.0)
+            right_gripper = init_cfg.get("gripper_right", 100.0)
+            print(f"\n  Using init position for task: {task_key}")
+        else:
+            left_joints = self.INIT_LEFT_JOINTS
+            right_joints = self.INIT_RIGHT_JOINTS
+            left_gripper = self.INIT_GRIPPER_LEFT
+            right_gripper = self.INIT_GRIPPER_RIGHT
+            print(f"\n  Using default init position (no match for '{task}')")
+
         print("\n" + "=" * 60)
         print("STEP 2: MOVE TO INITIAL POSITION")
         print("=" * 60)
@@ -342,13 +379,33 @@ class ZMQCommandPublisher:
                 elif inp == 'no':
                     return False
         success = self.send_command(
-            self.INIT_LEFT_JOINTS, self.INIT_GRIPPER_LEFT,
-            self.INIT_RIGHT_JOINTS, self.INIT_GRIPPER_RIGHT
+            left_joints, left_gripper,
+            right_joints, right_gripper
         )
         if success:
             print("Init position command sent. Waiting 2s...")
             time.sleep(2.0)
         return success
+
+    @staticmethod
+    def _match_task_key(task_prompt):
+        """根据 task_prompt 匹配 TASK_INIT_POSITIONS 的 key"""
+        task_lower = task_prompt.lower().strip()
+        # 精确匹配
+        for key in ZMQCommandPublisher.TASK_INIT_POSITIONS:
+            if key == task_lower:
+                return key
+        # 关键词匹配
+        keyword_map = {
+            "pour": "pour",
+            "apple": "pnp_apple_star",
+            "starfruit": "pnp_apple_star",
+            "star": "pnp_apple_star",
+        }
+        for keyword, key in keyword_map.items():
+            if keyword in task_lower:
+                return key
+        return None
 
     def close(self):
         self.socket.close()
@@ -535,15 +592,15 @@ class PI0RobotController:
 
         return left_joints, left_gripper_raw, right_joints, right_gripper_raw, (left_ok, right_ok)
 
-    def initialize_robot(self, wait_for_confirm=True):
+    def initialize_robot(self, task="pour", wait_for_confirm=True):
         """机器人初始化流程: 抬手 -> 初始位置 -> 确认"""
         # Step 1: 抬手
         lift_result = self.cmd_pub.send_lift_arm_position(wait_for_confirm=wait_for_confirm)
         if lift_result is False:
             return False
 
-        # Step 2: 初始位置
-        init_ok = self.cmd_pub.send_init_position(wait_for_confirm=wait_for_confirm)
+        # Step 2: 初始位置（根据任务选择）
+        init_ok = self.cmd_pub.send_init_position(task=task, wait_for_confirm=wait_for_confirm)
         if not init_ok:
             return False
 
@@ -611,7 +668,7 @@ class PI0RobotController:
         """
         # 初始化机器人
         if init_robot:
-            if not self.initialize_robot():
+            if not self.initialize_robot(task=task_prompt):
                 print("Initialization aborted.")
                 return
             time.sleep(0.5)
