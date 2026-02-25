@@ -562,17 +562,28 @@ class ROSDataSubscriber:
 class PI0TestController:
     """PI0 测试控制器 - 整合模型推理、FK/IK 计算"""
     
-    def __init__(self, model, ik_solver_left=None, ik_solver_right=None):
+    # 锁定朝向的固定欧拉角 (zyx 顺序)
+    LOCKED_EULER_LEFT = np.array([-1.8158525116572453, 1.4325311534153802, 1.6442961973990653], dtype=np.float64)
+    LOCKED_EULER_RIGHT = np.array([2.856346276854692, 1.3826080031756822, -2.8279581076651064], dtype=np.float64)
+    
+    def __init__(self, model, ik_solver_left=None, ik_solver_right=None, lock_euler=False):
         """初始化控制器
         
         Args:
             model: PI0Model 实例
             ik_solver_left: 左臂 IK 求解器
             ik_solver_right: 右臂 IK 求解器
+            lock_euler: 是否锁定末端朝向（IK 计算时使用固定欧拉角）
         """
         self.model = model
         self.ik_solver_left = ik_solver_left
         self.ik_solver_right = ik_solver_right
+        self.lock_euler = lock_euler
+        
+        if self.lock_euler:
+            print(f"[Controller] 🔒 LOCK EULER MODE ENABLED")
+            print(f"    Left  fixed euler: {self.LOCKED_EULER_LEFT}")
+            print(f"    Right fixed euler: {self.LOCKED_EULER_RIGHT}")
         
         # 当前关节角度（用于 IK 初始猜测）
         self.current_joint_left = None
@@ -695,6 +706,15 @@ class PI0TestController:
         target_pos = action_slice[:3]
         target_euler = action_slice[3:6]  # roll, pitch, yaw (已经是欧拉角)
         gripper = action_slice[6]  # 夹爪位置 (0-1)
+        
+        # 锁定朝向模式：用固定欧拉角替换 PI0 输出的朝向
+        if self.lock_euler:
+            original_euler = target_euler.copy()
+            if side == 'left':
+                target_euler = self.LOCKED_EULER_LEFT.copy()
+            else:
+                target_euler = self.LOCKED_EULER_RIGHT.copy()
+            print(f"    [LOCK_EULER] {side}: original={original_euler} -> locked={target_euler}")
         
         # IK 求解
         joint_angles, success = ik_solver.inverse_kinematics(
@@ -1756,6 +1776,8 @@ def main():
                        help="Auto execute if max delta_joint < threshold (e.g., 0.2)")
     parser.add_argument("--execution_delay", type=float, default=1.0,
                        help="Delay in seconds after sending commands to allow robot to execute (default: 1.0)")
+    parser.add_argument("--lock_euler", action="store_true",
+                       help="Lock end-effector orientation: use fixed euler angles for IK instead of PI0 output")
     
     args = parser.parse_args()
     
@@ -1822,7 +1844,7 @@ def main():
         return
     
     # 初始化控制器
-    controller = PI0TestController(model, ik_solver_left, ik_solver_right)
+    controller = PI0TestController(model, ik_solver_left, ik_solver_right, lock_euler=args.lock_euler)
     
     # 选择数据源
     if args.zmq_mode:

@@ -111,7 +111,7 @@ PI05_TASK_PROMPT="pour"
 
 PI0_STEP=10
 ACTION_INDEX=5  # 从第2个action开始执行（跳过第1个action，索引从0开始）
-EXECUTE_STEPS=10  # 每次预测后执行多少步（应 <= PI0_STEP - ACTION_INDEX）
+EXECUTE_STEPS=5  # 每次预测后执行多少步（应 <= PI0_STEP - ACTION_INDEX）
 EXECUTION_DELAY=0.5  # 执行完动作后等待多少秒再进行下一次预测
 N_ITERATIONS=10
 
@@ -374,6 +374,41 @@ case ${MODE} in
             --confirm_each_command
         ;;
     
+    "zmq_control_lock_euler")
+        echo "==============================================" 
+        echo "⚠️  WARNING: CONTROL MODE (LOCK EULER)"
+        echo "==============================================" 
+        echo "IMPORTANT: First run ros_bridge.py in another terminal:"
+        echo "  /usr/bin/python3 /home/pine/yzj/src/ros_bridge.py"
+        echo ""
+        echo "Prediction: ${PI0_STEP} steps, Execute: ${EXECUTE_STEPS} steps (starting from action ${ACTION_INDEX})"
+        echo ""
+        echo "This mode will:"
+        echo "  1. Send init position → wait for 'yes' to start"
+        echo "  2. Execute ${EXECUTE_STEPS} actions per prediction (starting from action ${ACTION_INDEX})"
+        echo "  3. 🔒 LOCK orientation: use fixed euler angles for IK"
+        echo "     Left  euler: [-1.8159, 1.4325, 1.6443]"
+        echo "     Right euler: [ 2.8563, 1.3826, -2.8280]"
+        echo ""
+        echo "NOTE: Will run continuously until Ctrl+C"
+        echo "==============================================" 
+        read -p "Press Enter to continue or Ctrl+C to cancel..."
+        ${PYTHON_BIN} test_pi0_ros.py \
+            --train_config_name ${TRAIN_CONFIG_NAME} \
+            --checkpoint_path ${CHECKPOINT_PATH} \
+            --pi0_step ${PI0_STEP} \
+            --action_index ${ACTION_INDEX} \
+            --execute_steps ${EXECUTE_STEPS} \
+            --execution_delay ${EXECUTION_DELAY} \
+            --task_prompt "${TASK_PROMPT}" \
+            --n_iterations 999999 \
+            --zmq_mode \
+            --compute_ik \
+            --publish_command \
+            --show_joint_delta \
+            --lock_euler
+        ;;
+    
     "zmq_control_auto")
         echo "=============================================="
         echo "⚠️  WARNING: CONTROL MODE (AUTO EXECUTE)"
@@ -597,6 +632,43 @@ case ${MODE} in
             --confirm_each_command
         ;;
     
+    "pi05_zmq_control_lock_euler")
+        echo "==============================================" 
+        echo "⚠️  WARNING: PI0.5 CONTROL MODE (LOCK EULER)"
+        echo "==============================================" 
+        echo "IMPORTANT: First run ros_bridge.py in another terminal:"
+        echo "  /usr/bin/python3 /home/pine/yzj/src/ros_bridge.py"
+        echo ""
+        echo "Model: PI0.5 (${PI05_TRAIN_CONFIG_NAME})"
+        echo "Prediction: ${PI0_STEP} steps, Execute: ${EXECUTE_STEPS} steps (starting from action ${ACTION_INDEX})"
+        echo ""
+        echo "This mode will:"
+        echo "  1. Send init position → wait for 'yes' to start"
+        echo "  2. Execute ${EXECUTE_STEPS} actions per prediction (starting from action ${ACTION_INDEX})"
+        echo "  3. 🔒 LOCK orientation: use fixed euler angles for IK"
+        echo "     Left  euler: [-1.8159, 1.4325, 1.6443]"
+        echo "     Right euler: [ 2.8563, 1.3826, -2.8280]"
+        echo ""
+        echo "NOTE: Will run continuously until Ctrl+C"
+        echo "==============================================" 
+        read -p "Press Enter to continue or Ctrl+C to cancel..."
+        ${PYTHON_BIN} test_pi0_ros.py \
+            --model_type pi05 \
+            --train_config_name ${PI05_TRAIN_CONFIG_NAME} \
+            --checkpoint_path ${PI05_CHECKPOINT_PATH} \
+            --pi0_step ${PI0_STEP} \
+            --action_index ${ACTION_INDEX} \
+            --execute_steps ${EXECUTE_STEPS} \
+            --execution_delay ${EXECUTION_DELAY} \
+            --task_prompt "${PI05_TASK_PROMPT}" \
+            --n_iterations 999999 \
+            --zmq_mode \
+            --compute_ik \
+            --publish_command \
+            --show_joint_delta \
+            --lock_euler
+        ;;
+    
     "pi05_zmq_control_auto")
         echo "=============================================="
         echo "⚠️  WARNING: PI0.5 CONTROL MODE (AUTO EXECUTE)"
@@ -642,9 +714,10 @@ case ${MODE} in
         echo "  zmq                 - Read via ZMQ bridge (print action only)"
         echo "  zmq_ik              - Read via ZMQ bridge + IK computation"
         echo "  zmq_ik_delta        - Read via ZMQ bridge + IK + joint delta"
-        echo "  zmq_control         - ⚠️ CONTROL MODE: Send commands to robot via ZMQ"
-        echo "  zmq_control_confirm - ⚠️ CONTROL MODE: Confirm before each command"
-        echo "  zmq_control_auto    - ⚠️ CONTROL MODE: Auto execute if delta < threshold"
+        echo "  zmq_control              - ⚠️ CONTROL MODE: Send commands to robot via ZMQ"
+        echo "  zmq_control_confirm      - ⚠️ CONTROL MODE: Confirm before each command"
+        echo "  zmq_control_auto         - ⚠️ CONTROL MODE: Auto execute if delta < threshold"
+        echo "  zmq_control_lock_euler   - ⚠️ CONTROL MODE: Lock orientation (fixed euler)"
         echo ""
         echo "=== PI0.5 modes (prefix: pi05_) ==="
         echo "  pi05_dummy               - Test pi0.5 model loading with random images"
@@ -654,9 +727,10 @@ case ${MODE} in
         echo "  pi05_zmq                 - Read via ZMQ bridge (print action only)"
         echo "  pi05_zmq_ik              - Read via ZMQ bridge + IK computation"
         echo "  pi05_zmq_ik_delta        - Read via ZMQ bridge + IK + joint delta"
-        echo "  pi05_zmq_control         - ⚠️ CONTROL MODE: Send commands to robot"
-        echo "  pi05_zmq_control_confirm - ⚠️ CONTROL MODE: Confirm before each command"
-        echo "  pi05_zmq_control_auto    - ⚠️ CONTROL MODE: Auto execute"
+        echo "  pi05_zmq_control              - ⚠️ CONTROL MODE: Send commands to robot"
+        echo "  pi05_zmq_control_confirm      - ⚠️ CONTROL MODE: Confirm before each command"
+        echo "  pi05_zmq_control_auto         - ⚠️ CONTROL MODE: Auto execute"
+        echo "  pi05_zmq_control_lock_euler   - ⚠️ CONTROL MODE: Lock orientation (fixed euler)"
         exit 1
         ;;
 esac
