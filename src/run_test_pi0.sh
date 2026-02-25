@@ -1,10 +1,13 @@
 #!/bin/bash
-# PI0 测试脚本 - 加载 checkpoint/10000 模型
+# PI0/PI0.5 测试脚本 - 加载 checkpoint 模型
 # 
 # 用法:
 # conda activate RoboTwin
-# source ../RoboTwin/policy/pi0/.venv/bin/activate
+# source ../RoboTwin/policy/pi0/.venv/bin/activate   # pi0 模型
+# source ../openpi/.venv/bin/activate                 # pi0.5 模型
 # cd /home/pine/yzj/src
+#
+#   === PI0 模式 ===
 #   1. 仅测试模型加载（dummy 模式）：
 #      ./run_test_pi0.sh dummy
 #
@@ -22,6 +25,19 @@
 #      ./run_test_pi0.sh ros
 #      ./run_test_pi0.sh ros_ik
 #
+#   === PI0.5 模式 ===（前缀 pi05_）
+#   5. Pi0.5 dummy 模式：
+#      ./run_test_pi0.sh pi05_dummy
+#
+#   6. Pi0.5 ZMQ 模式：
+#      ./run_test_pi0.sh pi05_zmq
+#      ./run_test_pi0.sh pi05_zmq_ik
+#      ./run_test_pi0.sh pi05_zmq_control
+#      ./run_test_pi0.sh pi05_zmq_control_auto
+#
+#   7. Pi0.5 bag 模式：
+#      ./run_test_pi0.sh pi05_bag /path/to/file.bag
+#
 # 参考原 eval.sh 命令:
 #   bash eval.sh pour demo_clean R1_FFT_pour_35_0130_5k demo_clean 0 0 10000
 
@@ -36,8 +52,9 @@ cd /home/pine/yzj/src
 
 # 模型配置
 # TRAIN_CONFIG_NAME="R1_FFT_pour_35_0130_5k"
-TRAIN_CONFIG_NAME="R1_FT_lora_2cuda"
-# TRAIN_CONFIG_NAME="R1_FT_lora_1cuda"
+# TRAIN_CONFIG_NAME="R1_FT_lora_2cuda"
+TRAIN_CONFIG_NAME="R1_FT_lora_1cuda"
+# TRAIN_CONFIG_NAME="pi05_zaijia_0215"
 # 0130
 # CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/pour_35_first/10000" # 35 pour[最早]
 # TASK_PROMPT="pour"
@@ -73,11 +90,23 @@ TRAIN_CONFIG_NAME="R1_FT_lora_2cuda"
 # CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_stack_cup_0215_48_lora_2/30000" # stack cup
 # TASK_PROMPT="stack cups"
 # CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pnp_0212_55_lora_2/10000" # 
-CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pnp_0212_55_lora_2/30000" # 抓住了但是不懂往上提 
-TASK_PROMPT="take banana and pears and put them on a plate"
+# CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pnp_0212_55_lora_2/30000" # 抓住了但是不懂往上提 
+# TASK_PROMPT="take banana and pears and put them on a plate"
 # CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pour_0212_48_lora_2/30000" # 0% lora 30000 直接开始到水了 
 # CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/pi05_pour_50_0215/29999" # 0% lora   
 # TASK_PROMPT="pour"
+# 0225
+CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_Lora_pnp_apple_star_1/20000" # 抓住了但是不懂往上提 
+TASK_PROMPT="Pick up the starfruit and the apple, then place them on the plate."
+
+# ========================================
+# Pi0.5 模型配置（使用 openpi 主仓库）
+# ========================================
+PI05_TRAIN_CONFIG_NAME="pi05_zaijia_0215"
+PI05_CHECKPOINT_PATH="/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/pi05_pour_50_0215/29999"
+PI05_TASK_PROMPT="pour"
+# PI05_CHECKPOINT_PATH="/path/to/pi05/pnp/checkpoint/29999"
+# PI05_TASK_PROMPT="pick up the banana and the pear, then place them on the plate"
 
 
 PI0_STEP=10
@@ -90,14 +119,44 @@ N_ITERATIONS=10
 MODE=${1:-"dummy"}
 BAG_FILE=${2:-""}
 
+# 判断是否是 pi05 模式
+if [[ "${MODE}" == pi05_* ]]; then
+    MODEL_TYPE="pi05"
+    ACTIVE_CONFIG="${PI05_TRAIN_CONFIG_NAME}"
+    ACTIVE_CHECKPOINT="${PI05_CHECKPOINT_PATH}"
+    ACTIVE_PROMPT="${PI05_TASK_PROMPT}"
+    # Pi0.5 使用 openpi 的 .venv 环境
+    PYTHON_BIN="/home/pine/yzj/openpi/.venv/bin/python"
+    if [ ! -f "${PYTHON_BIN}" ]; then
+        echo "Error: openpi venv not found at ${PYTHON_BIN}"
+        echo "Please run: cd /home/pine/yzj/openpi && uv venv && uv pip install -e ."
+        exit 1
+    fi
+    echo "[ENV] Using openpi venv Python: ${PYTHON_BIN}"
+else
+    MODEL_TYPE="pi0"
+    ACTIVE_CONFIG="${TRAIN_CONFIG_NAME}"
+    ACTIVE_CHECKPOINT="${CHECKPOINT_PATH}"
+    ACTIVE_PROMPT="${TASK_PROMPT}"
+    # Pi0 使用 RoboTwin/policy/pi0 的 .venv 环境
+    PYTHON_BIN="/home/pine/yzj/RoboTwin/policy/pi0/.venv/bin/python"
+    if [ ! -f "${PYTHON_BIN}" ]; then
+        echo "Error: pi0 venv not found at ${PYTHON_BIN}"
+        echo "Please activate the correct environment first."
+        exit 1
+    fi
+    echo "[ENV] Using pi0 venv Python: ${PYTHON_BIN}"
+fi
+
 echo "========================================"
-echo "PI0 Test Script"
+echo "PI0/PI0.5 Test Script"
 echo "========================================"
-echo "Train Config: ${TRAIN_CONFIG_NAME}"
-echo "Checkpoint:   ${CHECKPOINT_PATH}"
+echo "Model Type:   ${MODEL_TYPE}"
+echo "Train Config: ${ACTIVE_CONFIG}"
+echo "Checkpoint:   ${ACTIVE_CHECKPOINT}"
 echo "PI0 Step:     ${PI0_STEP}"
 echo "Execute Steps:${EXECUTE_STEPS}"
-echo "Task Prompt:  ${TASK_PROMPT}"
+echo "Task Prompt:  ${ACTIVE_PROMPT}"
 echo "Mode:         ${MODE}"
 if [ -n "${BAG_FILE}" ]; then
     echo "Bag File:     ${BAG_FILE}"
@@ -107,7 +166,7 @@ echo "========================================"
 case ${MODE} in
     "dummy")
         echo "Running in DUMMY mode (random images)..."
-        python test_pi0_ros.py \
+        ${PYTHON_BIN} test_pi0_ros.py \
             --train_config_name ${TRAIN_CONFIG_NAME} \
             --checkpoint_path ${CHECKPOINT_PATH} \
             --pi0_step ${PI0_STEP} \
@@ -124,7 +183,7 @@ case ${MODE} in
             exit 1
         fi
         echo "Running in BAG FILE mode..."
-        python test_pi0_ros.py \
+        ${PYTHON_BIN} test_pi0_ros.py \
             --train_config_name ${TRAIN_CONFIG_NAME} \
             --checkpoint_path ${CHECKPOINT_PATH} \
             --pi0_step ${PI0_STEP} \
@@ -136,7 +195,7 @@ case ${MODE} in
     
     "ros")
         echo "Running in ROS mode (from topics)..."
-        python test_pi0_ros.py \
+        ${PYTHON_BIN} test_pi0_ros.py \
             --train_config_name ${TRAIN_CONFIG_NAME} \
             --checkpoint_path ${CHECKPOINT_PATH} \
             --pi0_step ${PI0_STEP} \
@@ -148,7 +207,7 @@ case ${MODE} in
     
     "ros_ik")
         echo "Running in ROS mode with IK computation..."
-        python test_pi0_ros.py \
+        ${PYTHON_BIN} test_pi0_ros.py \
             --train_config_name ${TRAIN_CONFIG_NAME} \
             --checkpoint_path ${CHECKPOINT_PATH} \
             --pi0_step ${PI0_STEP} \
@@ -164,7 +223,7 @@ case ${MODE} in
         echo "IMPORTANT: First run ros_bridge.py in another terminal:"
         echo "  /usr/bin/python3 /home/pine/yzj/src/ros_bridge.py"
         echo "=============================================="
-        python test_pi0_ros.py \
+        ${PYTHON_BIN} test_pi0_ros.py \
             --train_config_name ${TRAIN_CONFIG_NAME} \
             --checkpoint_path ${CHECKPOINT_PATH} \
             --pi0_step ${PI0_STEP} \
@@ -180,7 +239,7 @@ case ${MODE} in
         echo "IMPORTANT: First run ros_bridge.py in another terminal:"
         echo "  /usr/bin/python3 /home/pine/yzj/src/ros_bridge.py"
         echo "=============================================="
-        python test_pi0_ros.py \
+        ${PYTHON_BIN} test_pi0_ros.py \
             --train_config_name ${TRAIN_CONFIG_NAME} \
             --checkpoint_path ${CHECKPOINT_PATH} \
             --pi0_step ${PI0_STEP} \
@@ -196,7 +255,7 @@ case ${MODE} in
         echo "IMPORTANT: First run ros_bridge.py in another terminal:"
         echo "  /usr/bin/python3 /home/pine/yzj/src/ros_bridge.py"
         echo "=============================================="
-        python test_pi0_ros.py \
+        ${PYTHON_BIN} test_pi0_ros.py \
             --train_config_name ${TRAIN_CONFIG_NAME} \
             --checkpoint_path ${CHECKPOINT_PATH} \
             --pi0_step ${PI0_STEP} \
@@ -214,7 +273,7 @@ case ${MODE} in
             exit 1
         fi
         echo "Running in BAG FILE mode with GT comparison..."
-        python test_pi0_ros.py \
+        ${PYTHON_BIN} test_pi0_ros.py \
             --train_config_name ${TRAIN_CONFIG_NAME} \
             --checkpoint_path ${CHECKPOINT_PATH} \
             --pi0_step ${PI0_STEP} \
@@ -231,7 +290,7 @@ case ${MODE} in
             exit 1
         fi
         echo "Running in BAG FILE mode with IK + GT comparison + joint delta..."
-        python test_pi0_ros.py \
+        ${PYTHON_BIN} test_pi0_ros.py \
             --train_config_name ${TRAIN_CONFIG_NAME} \
             --checkpoint_path ${CHECKPOINT_PATH} \
             --pi0_step ${PI0_STEP} \
@@ -261,7 +320,7 @@ case ${MODE} in
         echo "NOTE: Will run continuously until Ctrl+C"
         echo "=============================================="
         read -p "Press Enter to continue or Ctrl+C to cancel..."
-        python test_pi0_ros.py \
+        ${PYTHON_BIN} test_pi0_ros.py \
             --train_config_name ${TRAIN_CONFIG_NAME} \
             --checkpoint_path ${CHECKPOINT_PATH} \
             --pi0_step ${PI0_STEP} \
@@ -299,7 +358,7 @@ case ${MODE} in
         echo "NOTE: Will run continuously until Ctrl+C"
         echo "=============================================="
         read -p "Press Enter to continue or Ctrl+C to cancel..."
-        python test_pi0_ros.py \
+        ${PYTHON_BIN} test_pi0_ros.py \
             --train_config_name ${TRAIN_CONFIG_NAME} \
             --checkpoint_path ${CHECKPOINT_PATH} \
             --pi0_step ${PI0_STEP} \
@@ -338,7 +397,7 @@ case ${MODE} in
         echo "NOTE: Will run continuously until Ctrl+C"
         echo "=============================================="
         read -p "Press Enter to continue or Ctrl+C to cancel..."
-        python test_pi0_ros.py \
+        ${PYTHON_BIN} test_pi0_ros.py \
             --train_config_name ${TRAIN_CONFIG_NAME} \
             --checkpoint_path ${CHECKPOINT_PATH} \
             --pi0_step ${PI0_STEP} \
@@ -355,11 +414,225 @@ case ${MODE} in
             --auto_joint_threshold 0.2
         ;;
     
+    # ============================================================
+    #  PI0.5 模式（使用 openpi 主仓库的 pi05 模型）
+    # ============================================================
+    "pi05_dummy")
+        echo "Running PI0.5 in DUMMY mode (random images)..."
+        ${PYTHON_BIN} test_pi0_ros.py \
+            --model_type pi05 \
+            --train_config_name ${PI05_TRAIN_CONFIG_NAME} \
+            --checkpoint_path ${PI05_CHECKPOINT_PATH} \
+            --pi0_step ${PI0_STEP} \
+            --task_prompt "${PI05_TASK_PROMPT}" \
+            --n_iterations ${N_ITERATIONS} \
+            --dummy_mode \
+            --print_only
+        ;;
+    
+    "pi05_bag")
+        if [ -z "${BAG_FILE}" ]; then
+            echo "Error: Please provide bag file path"
+            echo "Usage: ./run_test_pi0.sh pi05_bag /path/to/file.bag"
+            exit 1
+        fi
+        echo "Running PI0.5 in BAG FILE mode..."
+        ${PYTHON_BIN} test_pi0_ros.py \
+            --model_type pi05 \
+            --train_config_name ${PI05_TRAIN_CONFIG_NAME} \
+            --checkpoint_path ${PI05_CHECKPOINT_PATH} \
+            --pi0_step ${PI0_STEP} \
+            --task_prompt "${PI05_TASK_PROMPT}" \
+            --n_iterations ${N_ITERATIONS} \
+            --bag_file "${BAG_FILE}" \
+            --print_only
+        ;;
+    
+    "pi05_bag_compare")
+        if [ -z "${BAG_FILE}" ]; then
+            echo "Error: Please provide bag file path"
+            echo "Usage: ./run_test_pi0.sh pi05_bag_compare /path/to/file.bag"
+            exit 1
+        fi
+        echo "Running PI0.5 in BAG FILE mode with GT comparison..."
+        ${PYTHON_BIN} test_pi0_ros.py \
+            --model_type pi05 \
+            --train_config_name ${PI05_TRAIN_CONFIG_NAME} \
+            --checkpoint_path ${PI05_CHECKPOINT_PATH} \
+            --pi0_step ${PI0_STEP} \
+            --task_prompt "${PI05_TASK_PROMPT}" \
+            --n_iterations ${N_ITERATIONS} \
+            --bag_file "${BAG_FILE}" \
+            --compare_gt_action
+        ;;
+    
+    "pi05_bag_full")
+        if [ -z "${BAG_FILE}" ]; then
+            echo "Error: Please provide bag file path"
+            echo "Usage: ./run_test_pi0.sh pi05_bag_full /path/to/file.bag"
+            exit 1
+        fi
+        echo "Running PI0.5 in BAG FILE mode with IK + GT comparison + joint delta..."
+        ${PYTHON_BIN} test_pi0_ros.py \
+            --model_type pi05 \
+            --train_config_name ${PI05_TRAIN_CONFIG_NAME} \
+            --checkpoint_path ${PI05_CHECKPOINT_PATH} \
+            --pi0_step ${PI0_STEP} \
+            --task_prompt "${PI05_TASK_PROMPT}" \
+            --n_iterations ${N_ITERATIONS} \
+            --bag_file "${BAG_FILE}" \
+            --compute_ik \
+            --show_joint_delta \
+            --compare_gt_action
+        ;;
+    
+    "pi05_zmq")
+        echo "Running PI0.5 in ZMQ BRIDGE mode..."
+        echo "=============================================="
+        echo "IMPORTANT: First run ros_bridge.py in another terminal:"
+        echo "  /usr/bin/python3 /home/pine/yzj/src/ros_bridge.py"
+        echo "=============================================="
+        ${PYTHON_BIN} test_pi0_ros.py \
+            --model_type pi05 \
+            --train_config_name ${PI05_TRAIN_CONFIG_NAME} \
+            --checkpoint_path ${PI05_CHECKPOINT_PATH} \
+            --pi0_step ${PI0_STEP} \
+            --task_prompt "${PI05_TASK_PROMPT}" \
+            --n_iterations ${N_ITERATIONS} \
+            --zmq_mode \
+            --print_only
+        ;;
+    
+    "pi05_zmq_ik")
+        echo "Running PI0.5 in ZMQ BRIDGE mode with IK computation..."
+        echo "=============================================="
+        echo "IMPORTANT: First run ros_bridge.py in another terminal:"
+        echo "  /usr/bin/python3 /home/pine/yzj/src/ros_bridge.py"
+        echo "=============================================="
+        ${PYTHON_BIN} test_pi0_ros.py \
+            --model_type pi05 \
+            --train_config_name ${PI05_TRAIN_CONFIG_NAME} \
+            --checkpoint_path ${PI05_CHECKPOINT_PATH} \
+            --pi0_step ${PI0_STEP} \
+            --task_prompt "${PI05_TASK_PROMPT}" \
+            --n_iterations ${N_ITERATIONS} \
+            --zmq_mode \
+            --compute_ik
+        ;;
+    
+    "pi05_zmq_ik_delta")
+        echo "Running PI0.5 in ZMQ BRIDGE mode with IK + joint delta..."
+        echo "=============================================="
+        echo "IMPORTANT: First run ros_bridge.py in another terminal:"
+        echo "  /usr/bin/python3 /home/pine/yzj/src/ros_bridge.py"
+        echo "=============================================="
+        ${PYTHON_BIN} test_pi0_ros.py \
+            --model_type pi05 \
+            --train_config_name ${PI05_TRAIN_CONFIG_NAME} \
+            --checkpoint_path ${PI05_CHECKPOINT_PATH} \
+            --pi0_step ${PI0_STEP} \
+            --task_prompt "${PI05_TASK_PROMPT}" \
+            --n_iterations ${N_ITERATIONS} \
+            --zmq_mode \
+            --compute_ik \
+            --show_joint_delta
+        ;;
+    
+    "pi05_zmq_control")
+        echo "=============================================="
+        echo "⚠️  WARNING: PI0.5 CONTROL MODE - ROBOT WILL MOVE!"
+        echo "=============================================="
+        echo "IMPORTANT: First run ros_bridge.py in another terminal:"
+        echo "  /usr/bin/python3 /home/pine/yzj/src/ros_bridge.py"
+        echo ""
+        echo "Model: PI0.5 (${PI05_TRAIN_CONFIG_NAME})"
+        echo "Prediction: ${PI0_STEP} steps, Execute: ${EXECUTE_STEPS} steps (starting from action ${ACTION_INDEX})"
+        echo ""
+        echo "NOTE: Will run continuously until Ctrl+C"
+        echo "=============================================="
+        read -p "Press Enter to continue or Ctrl+C to cancel..."
+        ${PYTHON_BIN} test_pi0_ros.py \
+            --model_type pi05 \
+            --train_config_name ${PI05_TRAIN_CONFIG_NAME} \
+            --checkpoint_path ${PI05_CHECKPOINT_PATH} \
+            --pi0_step ${PI0_STEP} \
+            --action_index ${ACTION_INDEX} \
+            --execute_steps ${EXECUTE_STEPS} \
+            --execution_delay ${EXECUTION_DELAY} \
+            --task_prompt "${PI05_TASK_PROMPT}" \
+            --n_iterations 999999 \
+            --zmq_mode \
+            --compute_ik \
+            --publish_command \
+            --show_joint_delta
+        ;;
+    
+    "pi05_zmq_control_confirm")
+        echo "=============================================="
+        echo "⚠️  WARNING: PI0.5 CONTROL MODE (WITH CONFIRMATION)"
+        echo "=============================================="
+        echo "IMPORTANT: First run ros_bridge.py in another terminal:"
+        echo "  /usr/bin/python3 /home/pine/yzj/src/ros_bridge.py"
+        echo ""
+        echo "Model: PI0.5 (${PI05_TRAIN_CONFIG_NAME})"
+        echo "Prediction: ${PI0_STEP} steps, Execute: ${EXECUTE_STEPS} steps (starting from action ${ACTION_INDEX})"
+        echo ""
+        echo "NOTE: Will run continuously until Ctrl+C"
+        echo "=============================================="
+        read -p "Press Enter to continue or Ctrl+C to cancel..."
+        ${PYTHON_BIN} test_pi0_ros.py \
+            --model_type pi05 \
+            --train_config_name ${PI05_TRAIN_CONFIG_NAME} \
+            --checkpoint_path ${PI05_CHECKPOINT_PATH} \
+            --pi0_step ${PI0_STEP} \
+            --action_index ${ACTION_INDEX} \
+            --execute_steps ${EXECUTE_STEPS} \
+            --execution_delay ${EXECUTION_DELAY} \
+            --task_prompt "${PI05_TASK_PROMPT}" \
+            --n_iterations 999999 \
+            --zmq_mode \
+            --compute_ik \
+            --publish_command \
+            --show_joint_delta \
+            --confirm_each_command
+        ;;
+    
+    "pi05_zmq_control_auto")
+        echo "=============================================="
+        echo "⚠️  WARNING: PI0.5 CONTROL MODE (AUTO EXECUTE)"
+        echo "=============================================="
+        echo "IMPORTANT: First run ros_bridge.py in another terminal:"
+        echo "  /usr/bin/python3 /home/pine/yzj/src/ros_bridge.py"
+        echo ""
+        echo "Model: PI0.5 (${PI05_TRAIN_CONFIG_NAME})"
+        echo "Prediction: ${PI0_STEP} steps, Execute: ${EXECUTE_STEPS} steps (starting from action ${ACTION_INDEX})"
+        echo ""
+        echo "NOTE: Will run continuously until Ctrl+C"
+        echo "=============================================="
+        read -p "Press Enter to continue or Ctrl+C to cancel..."
+        ${PYTHON_BIN} test_pi0_ros.py \
+            --model_type pi05 \
+            --train_config_name ${PI05_TRAIN_CONFIG_NAME} \
+            --checkpoint_path ${PI05_CHECKPOINT_PATH} \
+            --pi0_step ${PI0_STEP} \
+            --action_index ${ACTION_INDEX} \
+            --execute_steps ${EXECUTE_STEPS} \
+            --execution_delay ${EXECUTION_DELAY} \
+            --task_prompt "${PI05_TASK_PROMPT}" \
+            --n_iterations 999999 \
+            --zmq_mode \
+            --compute_ik \
+            --publish_command \
+            --show_joint_delta \
+            --auto_execute_threshold 0.10 \
+            --auto_joint_threshold 0.2
+        ;;
+    
     *)
         echo "Unknown mode: ${MODE}"
         echo "Usage: ./run_test_pi0.sh <mode> [bag_file_path]"
         echo ""
-        echo "Available modes:"
+        echo "=== PI0 modes ==="
         echo "  dummy               - Test model loading with random images"
         echo "  bag                 - Read from rosbag file (print action only)"
         echo "  bag_compare         - Read from rosbag file + compare with GT action"
@@ -372,6 +645,18 @@ case ${MODE} in
         echo "  zmq_control         - ⚠️ CONTROL MODE: Send commands to robot via ZMQ"
         echo "  zmq_control_confirm - ⚠️ CONTROL MODE: Confirm before each command"
         echo "  zmq_control_auto    - ⚠️ CONTROL MODE: Auto execute if delta < threshold"
+        echo ""
+        echo "=== PI0.5 modes (prefix: pi05_) ==="
+        echo "  pi05_dummy               - Test pi0.5 model loading with random images"
+        echo "  pi05_bag                 - Read from rosbag file (print action only)"
+        echo "  pi05_bag_compare         - Read from rosbag file + compare with GT action"
+        echo "  pi05_bag_full            - Read from rosbag file + IK + GT + joint delta"
+        echo "  pi05_zmq                 - Read via ZMQ bridge (print action only)"
+        echo "  pi05_zmq_ik              - Read via ZMQ bridge + IK computation"
+        echo "  pi05_zmq_ik_delta        - Read via ZMQ bridge + IK + joint delta"
+        echo "  pi05_zmq_control         - ⚠️ CONTROL MODE: Send commands to robot"
+        echo "  pi05_zmq_control_confirm - ⚠️ CONTROL MODE: Confirm before each command"
+        echo "  pi05_zmq_control_auto    - ⚠️ CONTROL MODE: Auto execute"
         exit 1
         ;;
 esac

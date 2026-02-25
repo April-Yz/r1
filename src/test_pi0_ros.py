@@ -78,29 +78,34 @@ except ImportError:
     print("[Warning] zmq not available. Install pyzmq for ZMQ bridge mode.")
     ZMQ_AVAILABLE = False
 
-# 添加必要的路径
+# 添加必要的路径（不包含 openpi，会在 PI0Model 中根据 model_type 动态添加）
 current_file_path = os.path.abspath(__file__)
 parent_directory = os.path.dirname(current_file_path)
 sys.path.append(parent_directory)
 sys.path.append(os.path.join(parent_directory, "../RoboTwin"))
-sys.path.append(os.path.join(parent_directory, "../RoboTwin/policy/pi0"))
-sys.path.append(os.path.join(parent_directory, "../RoboTwin/policy/pi0/src"))
 
 
 class PI0Model:
-    """PI0 模型封装 - 直接加载 checkpoint"""
+    """PI0/PI0.5 模型封装 - 直接加载 checkpoint"""
     
-    def __init__(self, train_config_name, checkpoint_path, pi0_step=10):
-        """初始化 PI0 模型
+    def __init__(self, train_config_name, checkpoint_path, pi0_step=10, model_type="pi0"):
+        """初始化 PI0/PI0.5 模型
         
         Args:
-            train_config_name: 训练配置名称，如 "R1_FFT_pour_35_0130_5k"
-            checkpoint_path: checkpoint 路径，如 "/home/pine/yzj/RoboTwin/policy/pi0/checkpoint/10000"
+            train_config_name: 训练配置名称
+                - pi0:  如 "R1_FT_lora_2cuda"
+                - pi05: 如 "pi05_zaijia_0215"
+            checkpoint_path: checkpoint 路径
             pi0_step: 预测步数
+            model_type: 模型类型，"pi0" 或 "pi05"
         """
         self.train_config_name = train_config_name
         self.checkpoint_path = checkpoint_path
         self.pi0_step = pi0_step
+        self.model_type = model_type
+        
+        # 根据 model_type 动态添加对应的 openpi 包路径
+        self._setup_openpi_path()
         
         # 加载模型
         self._load_model()
@@ -109,9 +114,35 @@ class PI0Model:
         self.observation_window = None
         self.instruction = None
     
+    def _setup_openpi_path(self):
+        """根据 model_type 设置 openpi 包的 sys.path"""
+        if self.model_type == "pi05":
+            # Pi0.5 使用 openpi 主仓库（包含 pi05 模型支持和 pi05_zaijia_0215 配置）
+            openpi_src = os.path.join(parent_directory, "../openpi/src")
+            openpi_base = os.path.join(parent_directory, "../openpi")
+            print(f"[PI0Model] Using openpi (pi0.5) from: {openpi_src}")
+        else:
+            # Pi0 使用 RoboTwin 的 openpi 包
+            openpi_src = os.path.join(parent_directory, "../RoboTwin/policy/pi0/src")
+            openpi_base = os.path.join(parent_directory, "../RoboTwin/policy/pi0")
+            print(f"[PI0Model] Using openpi (pi0) from: {openpi_src}")
+        
+        # 插入到 sys.path 最前面，确保优先级
+        for p in [openpi_src, openpi_base]:
+            abs_p = os.path.abspath(p)
+            if abs_p in sys.path:
+                sys.path.remove(abs_p)
+            sys.path.insert(0, abs_p)
+    
     def _load_model(self):
-        """加载 PI0 模型"""
+        """加载 PI0/PI0.5 模型"""
         import jax.numpy as jnp
+        # 强制重新加载 openpi 模块（避免 pi0/pi05 路径切换后缓存问题）
+        import importlib
+        mods_to_reload = [k for k in sys.modules if k.startswith('openpi')]
+        for mod_name in mods_to_reload:
+            del sys.modules[mod_name]
+        
         from openpi.models import model as _model
         from openpi.policies import policy_config as _policy_config
         from openpi.training import config as _config
@@ -119,7 +150,7 @@ class PI0Model:
         import openpi.transforms as transforms
         import pathlib
         
-        print(f"[PI0Model] Loading config: {self.train_config_name}")
+        print(f"[PI0Model] Loading config: {self.train_config_name} (model_type={self.model_type})")
         config = _config.get_config(self.train_config_name)
         
         # 查找 assets_id
@@ -134,12 +165,22 @@ class PI0Model:
         
         # 创建 policy（使用 pathlib.Path 确保路径格式正确）
         checkpoint_path = pathlib.Path(self.checkpoint_path)
-        self.policy = _policy_config.create_trained_policy(
-            config,
-            checkpoint_path,
-            robotwin_repo_id=assets_id
-        )
-        print("[PI0Model] Model loaded successfully!")
+        
+        if self.model_type == "pi05":
+            # Pi0.5: openpi 版本的 create_trained_policy 不需要 robotwin_repo_id
+            # asset_id 已在 config 中设置（如 "trossen"）
+            self.policy = _policy_config.create_trained_policy(
+                config,
+                checkpoint_path,
+            )
+        else:
+            # Pi0: RoboTwin 版本需要传入 robotwin_repo_id
+            self.policy = _policy_config.create_trained_policy(
+                config,
+                checkpoint_path,
+                robotwin_repo_id=assets_id
+            )
+        print(f"[PI0Model] Model loaded successfully! (type={self.model_type})")
     
     def set_language(self, instruction):
         """设置语言指令"""
@@ -1105,17 +1146,43 @@ class ZMQCommandPublisher:
     ], dtype=np.float32)
     
     # 左臂初始关节角度 (6个关节，发送时会追加无效夹爪值变成7维)
+    # INIT_LEFT_JOINTS = np.array([
+    #     -0.16744680851063828, 2.0108510638297874, -0.6593617021276595,
+    #     2.002127659574468, 0.39382978723404255, -1.7193617021276595
+    # ], dtype=np.float32)
+    # 竖着的起始位置
+    # INIT_LEFT_JOINTS = np.array([
+    #     -0.08147325035863912,1.9309719370344378,-0.6462813369560264,
+    #     1.6983223021645413,-0.09117607891969487,-1.6626210466784836, #-2.5781769690913765
+    # ], dtype=np.float32)
     INIT_LEFT_JOINTS = np.array([
-        -0.16744680851063828, 2.0108510638297874, -0.6593617021276595,
-        2.002127659574468, 0.39382978723404255, -1.7193617021276595
+            -0.6742553191489362,
+            2.656595744680851,
+            -1.3061702127659574,
+            -0.0325531914893617,
+            1.4363829787234041,
+            -1.2231914893617022,
+            -2.753191489361702
     ], dtype=np.float32)
-    
+
     # 右臂初始关节角度 (6个关节，发送时会追加无效夹爪值变成7维)
+    # INIT_RIGHT_JOINTS = np.array([
+    #     0.19234042553191488, 1.8925531914893616, -0.6874468085106383,
+    #     -1.6057446808510638, -0.10148936170212766, 1.3085106382978724
+    # ], dtype=np.float32)
+    # INIT_RIGHT_JOINTS = np.array([
+    #     0.10855122617461728,1.605132829889882,-0.5524531334726537,
+    #     -1.7134746931199127,0.10444812382030134,1.617928507722137, #-2.732390914434211
+    # ], dtype=np.float32)
     INIT_RIGHT_JOINTS = np.array([
-        0.19234042553191488, 1.8925531914893616, -0.6874468085106383,
-        -1.6057446808510638, -0.10148936170212766, 1.3085106382978724
+            0.6561702127659574,
+            2.3187234042553193,
+            -1.1055319148936171,
+            0.19127659574468084,
+            -1.4397872340425533,
+            0.9957446808510638,
+            -2.468936170212766
     ], dtype=np.float32)
-    
     # 夹爪初始位置 (0-100)
     INIT_GRIPPER_LEFT = 100.0
     INIT_GRIPPER_RIGHT = 100.0
@@ -1630,6 +1697,8 @@ def main():
     parser = argparse.ArgumentParser(description="PI0 Test with ROS Topics")
     
     # 模型参数
+    parser.add_argument("--model_type", type=str, default="pi0", choices=["pi0", "pi05"],
+                       help="Model type: pi0 (original) or pi05 (Pi0.5, uses openpi)")
     parser.add_argument("--train_config_name", type=str, default="R1_FFT_pour_35_0130_5k",
                        help="Training config name")
     parser.add_argument("--checkpoint_path", type=str, 
@@ -1732,7 +1801,8 @@ def main():
     model = PI0Model(
         train_config_name=args.train_config_name,
         checkpoint_path=args.checkpoint_path,
-        pi0_step=args.pi0_step
+        pi0_step=args.pi0_step,
+        model_type=args.model_type
     )
     
     # 初始化 IK 求解器（bag/zmq 模式需要 FK 计算状态向量）
