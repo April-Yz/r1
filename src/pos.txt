@@ -7,3 +7,29 @@ rostopic echo /hdas/feedback_arm_right
   - right_arm
 position: [0.008085106382978723, 1.6727659574468086, -0.7004255319148937, -1.854468085106383, 0.33382978723404255, 1.5195744680851064, -2.753617021276596]
 
+
+
+
+INFO:websockets.server:connection open
+INFO:openpi.serving.websocket_policy_server:Connection from ('127.0.0.1', 38608) opened
+ERROR:websockets.server:connection handler failed
+Traceback (most recent call last):
+  File "/home/pine/yzj/openpi/.venv/lib/python3.11/site-packages/websockets/asyncio/server.py", line 376, in conn_handler
+    await self.handler(connection)
+  File "/home/pine/yzj/openpi/src/openpi/serving/websocket_policy_server.py", line 61, in _handler
+    action = self._policy.infer(obs)
+             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/pine/yzj/openpi/src/openpi/policies/policy.py", line 71, in infer
+    inputs = self._input_transform(inputs)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/pine/yzj/openpi/src/openpi/transforms.py", line 70, in __call__
+    data = transform(data)
+           ^^^^^^^^^^^^^^^
+  File "/home/pine/yzj/openpi/src/openpi/policies/aloha_policy.py", line 43, in __call__
+    data = _decode_aloha(data, adapt_to_pi=self.adapt_to_pi)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/pine/yzj/openpi/src/openpi/policies/aloha_policy.py", line 162, in _decode_aloha
+    state = np.asarray(data["state"])
+                       ~~~~^^^^^^^^^
+KeyError: 'state'
+

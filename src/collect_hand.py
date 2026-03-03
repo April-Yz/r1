@@ -171,6 +171,8 @@ class DataRecorder:
         self.is_recording = False
         self.out_color = None
         self.out_depth_vis = None
+        self.current_depth_dir = None
+        self.current_frame_idx = 0
 
     def _get_next_index(self):
         """扫描文件夹，返回当前最大的索引 + 1"""
@@ -185,13 +187,17 @@ class DataRecorder:
         """保存当前 ID 对应的相机内参"""
         color_stream = profile.get_stream(rs.stream.color).as_video_stream_profile()
         intrinsics = color_stream.get_intrinsics()
+        depth_scale = profile.get_device().first_depth_sensor().get_depth_scale()
         
         params = {
             "id": current_id,
             "width": intrinsics.width, "height": intrinsics.height,
             "fx": intrinsics.fx, "fy": intrinsics.fy,
             "ppx": intrinsics.ppx, "ppy": intrinsics.ppy,
-            "model": str(intrinsics.model), "coeffs": intrinsics.coeffs
+            "model": str(intrinsics.model), "coeffs": intrinsics.coeffs,
+            "depth_scale_m": depth_scale,
+            "depth_aligned_to_color": True,
+            "depth_storage": f"depth_{current_id}/%06d.png"
         }
         
         filename = os.path.join(self.save_dir, f"params_{current_id}.json")
@@ -206,7 +212,10 @@ class DataRecorder:
         
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         color_path = os.path.join(self.save_dir, f"rgb_{curr_id}.mp4")
-        depth_vis_path = os.path.join(self.save_dir, f"depth_{curr_id}.mp4")
+        depth_vis_path = os.path.join(self.save_dir, f"depth_vis_{curr_id}.mp4")
+        self.current_depth_dir = os.path.join(self.save_dir, f"depth_{curr_id}")
+        os.makedirs(self.current_depth_dir, exist_ok=True)
+        self.current_frame_idx = 0
         
         # 确保保存分辨率与相机输出完全一致
         self.out_color = cv2.VideoWriter(color_path, fourcc, self.fps, (self.width, self.height))
@@ -221,6 +230,8 @@ class DataRecorder:
             self.out_color.release()
             self.out_depth_vis.release()
             self.is_recording = False
+            self.current_depth_dir = None
+            self.current_frame_idx = 0
             # 停止后，索引自增，准备下一次录制
             self.record_idx += 1
 
@@ -244,8 +255,14 @@ class DataRecorder:
                 depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_data, alpha=0.03), cv2.COLORMAP_JET)
 
                 if self.is_recording:
+                    if self.current_frame_idx == 0:  # 录制第一帧时打印一次
+                        ds = profile.get_device().first_depth_sensor().get_depth_scale()
+                        print("depth dtype:", depth_data.dtype, "min:", depth_data.min(), "max:", depth_data.max(), "scale:", ds)
                     self.out_color.write(color_image)
                     self.out_depth_vis.write(depth_colormap)
+                    depth_path = os.path.join(self.current_depth_dir, f"{self.current_frame_idx:06d}.png")
+                    cv2.imwrite(depth_path, depth_data.astype(np.uint16))
+                    self.current_frame_idx += 1
                     cv2.circle(color_image, (40, 40), 15, (0, 0, 255), -1)
 
                 # 仅在显示预览时 resize，不影响保存的数据

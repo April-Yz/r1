@@ -653,7 +653,8 @@ class PI0RobotController:
     def run_control_loop(self, task_prompt="pour", n_iterations=20,
                          chunk_size=10, action_index=0, execute_steps=10,
                          execution_delay=0.5, init_robot=True,
-                         confirm_each=False):
+                         confirm_each=False, action_as_obs=False,
+                         repeat_actions=1):
         """主控制循环
 
         Args:
@@ -665,6 +666,9 @@ class PI0RobotController:
             execution_delay: 执行完动作后等待多少秒再进行下一次推理
             init_robot: 是否先初始化机器人位置
             confirm_each: 是否每步确认
+            action_as_obs: 是否用上次执行的最后一个 action 作为 state obs
+                           (第一次仍从 ZMQ 读取, 图片始终从 ZMQ 读取)
+            repeat_actions: 每个动作重复发送的次数 (防止执行精度不足)
         """
         # 初始化机器人
         if init_robot:
@@ -680,6 +684,8 @@ class PI0RobotController:
         print(f"  Execute steps per inference: {execute_steps}")
         print(f"  Action index start: {action_index}")
         print(f"  Execution delay: {execution_delay}s")
+        print(f"  Action as obs: {action_as_obs}")
+        print(f"  Repeat actions: {repeat_actions}x")
         print(f"{'='*60}\n")
 
         # IK 失败时的回退值
@@ -688,12 +694,12 @@ class PI0RobotController:
             'right_joints': None, 'right_gripper': None,
         }
 
+        # action_as_obs 模式: 记录上次执行的最后一个 action 作为下次的 state
+        last_executed_action = None  # 14D eepose: [left(7), right(7)]
+
         def signal_handler(signum, frame):
-            print("\n\nCtrl+C detected! Cleaning up...")
-            self.save_video_file(task_prompt.replace(' ', '_'))
-            self.zmq_sub.close()
-            self.cmd_pub.close()
-            sys.exit(0)
+            print("\n\nCtrl+C detected!")
+            raise KeyboardInterrupt
         signal.signal(signal.SIGINT, signal_handler)
 
         try:
@@ -724,8 +730,14 @@ class PI0RobotController:
                 if self.save_video:
                     self.video_frames.append(head_rgb.copy())
 
-                # 2. FK 计算状态向量
-                state = self.compute_state_vector(arm_left, arm_right, gripper_left, gripper_right)
+                # 2. 计算状态向量
+                if action_as_obs and last_executed_action is not None:
+                    # action_as_obs 模式: 用上次执行的最后一个 action 作为 state
+                    state = last_executed_action.astype(np.float32)
+                    print(f"[State] (action_as_obs) Using last executed action as state")
+                else:
+                    # 正常模式: 通过 FK 从关节角度计算 eepose
+                    state = self.compute_state_vector(arm_left, arm_right, gripper_left, gripper_right)
                 print(f"[State] Left:  pos={state[:3]}, euler={state[3:6]}, gripper={state[6]:.4f}")
                 print(f"[State] Right: pos={state[7:10]}, euler={state[10:13]}, gripper={state[13]:.4f}")
 
@@ -808,10 +820,16 @@ class PI0RobotController:
                         if inp == 'skip':
                             continue
 
-                    # 发送命令
-                    self.cmd_pub.send_command(left_joints, left_gr_raw, right_joints, right_gr_raw)
+                    # 发送命令 (重复 repeat_actions 次)
+                    for rep in range(repeat_actions):
+                        self.cmd_pub.send_command(left_joints, left_gr_raw, right_joints, right_gr_raw)
+                        if repeat_actions > 1 and rep < repeat_actions - 1:
+                            time.sleep(0.05)
                     executed += 1
-                    print(f"    SENT!")
+                    if repeat_actions > 1:
+                        print(f"    SENT x{repeat_actions}!")
+                    else:
+                        print(f"    SENT!")
 
                     # 保存成功值
                     if l_ok:
@@ -820,6 +838,9 @@ class PI0RobotController:
                     if r_ok:
                         last_good['right_joints'] = right_joints
                         last_good['right_gripper'] = right_gr_raw
+
+                    # 记录最后执行的 action (用于 action_as_obs 模式)
+                    last_executed_action = action[:14].copy()
 
                     # 动作间短暂延迟
                     if i < end_idx - 1:
@@ -884,6 +905,10 @@ def main():
                         help="Lock end-effector orientation to fixed euler angles")
     parser.add_argument("--confirm_each", action="store_true",
                         help="Confirm before each action")
+    parser.add_argument("--action_as_obs", action="store_true",
+                        help="Use last executed action as state obs (images still from ZMQ)")
+    parser.add_argument("--repeat_actions", type=int, default=1,
+                        help="Repeat each action command N times for better execution accuracy")
 
     # 视频
     parser.add_argument("--no_video", action="store_true", help="Disable video recording")
@@ -912,6 +937,8 @@ def main():
         execution_delay=args.execution_delay,
         init_robot=not args.no_init,
         confirm_each=args.confirm_each,
+        action_as_obs=args.action_as_obs,
+        repeat_actions=args.repeat_actions,
     )
 
 
