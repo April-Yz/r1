@@ -650,11 +650,54 @@ class PI0RobotController:
         except Exception as e:
             print(f"[Video] Failed: {e}")
 
+    def check_joint_arrival(self, target_left_joints, target_right_joints, tolerance=0.001):
+        """检查机器人关节是否到达目标位置
+
+        从 ZMQ 读取当前关节角度, 与 IK 求解的目标关节角度比较.
+
+        Args:
+            target_left_joints: 左臂目标关节角度 (6D)
+            target_right_joints: 右臂目标关节角度 (6D)
+            tolerance: 关节角度容差 (rad)
+
+        Returns:
+            arrived: 是否到位
+            left_error: 左臂最大关节误差
+            right_error: 右臂最大关节误差
+            left_errors: 左臂各关节误差 (6D)
+            right_errors: 右臂各关节误差 (6D)
+        """
+        result = self.zmq_sub.receive()
+        if result is None:
+            return False, float('inf'), float('inf'), None, None
+
+        _, _, _, arm_left, arm_right, _, _ = result
+
+        left_error = 0.0
+        right_error = 0.0
+        left_errors = None
+        right_errors = None
+        left_ok = True
+        right_ok = True
+
+        if target_left_joints is not None and arm_left is not None:
+            left_errors = np.abs(np.array(target_left_joints[:6]) - np.array(arm_left[:6]))
+            left_error = float(np.max(left_errors))
+            left_ok = left_error <= tolerance
+
+        if target_right_joints is not None and arm_right is not None:
+            right_errors = np.abs(np.array(target_right_joints[:6]) - np.array(arm_right[:6]))
+            right_error = float(np.max(right_errors))
+            right_ok = right_error <= tolerance
+
+        return left_ok and right_ok, left_error, right_error, left_errors, right_errors
+
     def run_control_loop(self, task_prompt="pour", n_iterations=20,
                          chunk_size=10, action_index=0, execute_steps=10,
                          execution_delay=0.5, init_robot=True,
                          confirm_each=False, action_as_obs=False,
-                         repeat_actions=1):
+                         repeat_actions=1, ensemble_size=1,
+                         joint_tolerance=0.01, arrival_timeout=1.0):
         """主控制循环
 
         Args:
@@ -669,6 +712,11 @@ class PI0RobotController:
             action_as_obs: 是否用上次执行的最后一个 action 作为 state obs
                            (第一次仍从 ZMQ 读取, 图片始终从 ZMQ 读取)
             repeat_actions: 每个动作重复发送的次数 (防止执行精度不足)
+            ensemble_size: Action ensemble 大小, 将连续 N 步合并为一步发送
+                           (仅在 action_as_obs=True 时生效, 1 = 不合并)
+            joint_tolerance: 关节到位检查容差 (rad), 与 ensemble 配合使用
+                             (0.01 rad ≈ 0.57°, 建议范围 0.005~0.05)
+            arrival_timeout: 等待关节到位的超时时间 (秒), 超时后继续执行
         """
         # 初始化机器人
         if init_robot:
@@ -686,6 +734,10 @@ class PI0RobotController:
         print(f"  Execution delay: {execution_delay}s")
         print(f"  Action as obs: {action_as_obs}")
         print(f"  Repeat actions: {repeat_actions}x")
+        if action_as_obs and ensemble_size > 1:
+            print(f"  Ensemble size: {ensemble_size}")
+            print(f"  Joint tolerance: {joint_tolerance} rad")
+            print(f"  Arrival timeout: {arrival_timeout}s")
         print(f"{'='*60}\n")
 
         # IK 失败时的回退值
@@ -814,6 +866,21 @@ class PI0RobotController:
                         print(f"    [IK] Both failed with no fallback, skipping!")
                         continue
 
+                    # Ensemble 模式: 跳过中间步, 只在 ensemble 边界发送最终 action
+                    if action_as_obs and ensemble_size > 1:
+                        step_in_chunk = i - start_idx
+                        is_ensemble_end = (step_in_chunk + 1) % ensemble_size == 0 or i == end_idx - 1
+                        if not is_ensemble_end:
+                            print(f"    [Ensemble] Accumulated ({step_in_chunk % ensemble_size + 1}/{ensemble_size}), skip send")
+                            if l_ok:
+                                last_good['left_joints'] = left_joints
+                                last_good['left_gripper'] = left_gr_raw
+                            if r_ok:
+                                last_good['right_joints'] = right_joints
+                                last_good['right_gripper'] = right_gr_raw
+                            last_executed_action = action[:14].copy()
+                            continue
+
                     # 确认模式
                     if confirm_each:
                         inp = input("    Execute? (ENTER=yes, 'skip'=no): ").strip().lower()
@@ -842,17 +909,56 @@ class PI0RobotController:
                     # 记录最后执行的 action (用于 action_as_obs 模式)
                     last_executed_action = action[:14].copy()
 
-                    # 动作间短暂延迟
-                    if i < end_idx - 1:
+                    # Ensemble 模式: 发送后轮询等待关节到位
+                    ensemble_waited = False
+                    if action_as_obs and ensemble_size > 1:
+                        step_in_chunk = i - start_idx
+                        grp_start = (step_in_chunk // ensemble_size) * ensemble_size
+                        grp_size = step_in_chunk - grp_start + 1
+                        wait_start = time.time()
+                        poll_interval = 0.03
+                        arrived = False
+                        l_err = r_err = float('inf')
+                        l_errs = r_errs = None
+                        poll_count = 0
+                        while True:
+                            time.sleep(poll_interval)
+                            poll_count += 1
+                            arrived, l_err, r_err, l_errs, r_errs = self.check_joint_arrival(
+                                left_joints, right_joints, tolerance=joint_tolerance)
+                            elapsed = time.time() - wait_start
+                            if arrived:
+                                print(f"    [Ensemble] Joints ARRIVED ({grp_size} steps merged) "
+                                      f"L_max_err={l_err:.6f} R_max_err={r_err:.6f} "
+                                      f"waited={elapsed:.2f}s polls={poll_count}")
+                                ensemble_waited = True
+                                break
+                            if elapsed >= arrival_timeout:
+                                print(f"    [Ensemble] TIMEOUT ({grp_size} steps merged, {elapsed:.2f}s) "
+                                      f"L_max_err={l_err:.6f} R_max_err={r_err:.6f} tol={joint_tolerance}")
+                                if l_errs is not None:
+                                    print(f"      L joint errors: {l_errs}")
+                                if r_errs is not None:
+                                    print(f"      R joint errors: {r_errs}")
+                                ensemble_waited = True
+                                break
+                            # 逐渐增大轮询间隔, 最大 0.1s
+                            poll_interval = min(poll_interval * 1.3, 0.1)
+
+                    # 动作间短暂延迟 (ensemble 已等过则跳过)
+                    if i < end_idx - 1 and not ensemble_waited:
                         time.sleep(0.05)
 
                 print(f"\n  Inference #{inference_num}: Executed {executed}/{end_idx - start_idx} steps"
                       + (f", IK fails: {ik_fails}" if ik_fails > 0 else ""))
 
-                # 等待机器人执行
+                # 等待机器人执行 (ensemble 模式已在每组等过到位, 跳过额外等待)
                 if executed > 0 and execution_delay > 0:
-                    print(f"  Waiting {execution_delay}s for robot execution...")
-                    time.sleep(execution_delay)
+                    if action_as_obs and ensemble_size > 1:
+                        pass  # ensemble 已轮询等待到位, 无需额外 delay
+                    else:
+                        print(f"  Waiting {execution_delay}s for robot execution...")
+                        time.sleep(execution_delay)
 
         except KeyboardInterrupt:
             print("\nControl loop interrupted")
@@ -909,6 +1015,12 @@ def main():
                         help="Use last executed action as state obs (images still from ZMQ)")
     parser.add_argument("--repeat_actions", type=int, default=1,
                         help="Repeat each action command N times for better execution accuracy")
+    parser.add_argument("--ensemble_size", type=int, default=1,
+                        help="Action ensemble: merge N steps into 1 send, check joint arrival (with --action_as_obs)")
+    parser.add_argument("--joint_tolerance", type=float, default=0.01,
+                        help="Joint arrival tolerance in rad, 0.01≈0.57° (used with --ensemble_size)")
+    parser.add_argument("--arrival_timeout", type=float, default=1.0,
+                        help="Timeout in seconds waiting for joints to arrive (used with --ensemble_size)")
 
     # 视频
     parser.add_argument("--no_video", action="store_true", help="Disable video recording")
@@ -939,6 +1051,9 @@ def main():
         confirm_each=args.confirm_each,
         action_as_obs=args.action_as_obs,
         repeat_actions=args.repeat_actions,
+        ensemble_size=args.ensemble_size,
+        joint_tolerance=args.joint_tolerance,
+        arrival_timeout=args.arrival_timeout,
     )
 
 

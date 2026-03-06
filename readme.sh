@@ -434,6 +434,7 @@ rclone copy  gdrive_yzj:R1/pi0_checkpoints/R1_FT_stack_cup_0210_48_lora/R1_Lora/
 
 rclone copy  /home/pine/yzj/src/results gdrive_yzj:R1/pi0_result/ -P --dry-run
 rclone copy  /media/pine/Yang/R1/pour gdrive_yzj:R1/0127/ -P --dry-run
+rclone copy  /home/pine/yzj/pnp_apple_star gdrive_yzj:R1/ros_data/pnp_apple_star -P --dry-run
 
 rclone copy  /home/pine/yzj/vis_head/ gdrive_yzj:R1/pour_vis/pour_0127/ -P --dry-run
 
@@ -469,4 +470,101 @@ rclone copy  gdrive_yzj:R1/pi0_checkpoints/R1_FT_stack_cup_0215_48_lora_2/R1_Lor
 rclone copy  gdrive_yzj:R1/pi0_checkpoints/R1_FT_pnp_0212_55_lora_2/R1_Lora_pnp_2/10000.tar.gz /home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pnp_0212_55_lora_2 -P
 rclone copy  gdrive_yzj:R1/pi0_checkpoints/R1_FT_pnp_0212_55_lora_2/R1_Lora_pnp_2/30000.tar.gz /home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_FT_pnp_0212_55_lora_2 -P
 
+rclone copy  gdrive_yzj:R1/pi0_checkpoints/R1_lora_cuda1/R1_Lora_pnp_apple_star_1/20000.tar.gz /home/pine/yzj/RoboTwin/policy/pi0/checkpoint/R1_Lora_pnp_apple_star_1 -P
+
 rclone copy  gdrive_yzj:R1/pi0_checkpoints/pine_new/pi05_pour_50_0215/29999 /home/pine/yzj/RoboTwin/policy/pi0/checkpoint/pi05_pour_50_0215/29999 -P
+rclone copy  gdrive_yzj:R1/pi0_checkpoints/pine_new/pi05_pnp0218/29999 /home/pine/yzj/RoboTwin/policy/pi0/checkpoint/pi05_pnp0218/29999 -P # 待测
+
+
+rclone copy  gdrive_yzj:R1/pi0_checkpoints/pine_new/pi05_pour_48_0226zaijia/29999 /home/pine/yzj/RoboTwin/policy/pi0/checkpoint/pi05_pour_48_0226zaijia/29999 -P # 待测
+rclone copy  gdrive_yzj:R1/pi0_checkpoints/pine_new/pi05_pnp_apple_star_0226zaijia/29999 /home/pine/yzj/RoboTwin/policy/pi0/checkpoint/pi05_pnp_apple_star_0226zaijia/29999 -P # 待测
+
+
+
+rclone copy /home/pine/yzj/hand/ gdrive_yzj:R1/hand/ -P --transfers 8 --checkers 16 --dry-run
+rclone copy /home/pine/yzj/src/videos gdrive_yzj:R1/pi0_result/pi05 -P --transfers 8 --checkers 16 --dry-run
+
+# Pi0.5 推理（先激活 openpi 环境）
+source ../openpi/.venv/bin/activate
+
+# dummy 测试
+./run_test_pi0.sh pi05_dummy
+
+# ZMQ 实时推理
+./run_test_pi0.sh pi05_zmq
+
+# ZMQ 控制机器人
+./run_test_pi0.sh pi05_zmq_control
+
+# PI0
+./run_test_pi0.sh zmq_control_lock_euler
+
+# PI0.5
+./run_test_pi0.sh pi05_zmq_control_lock_euler
+
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.6 uv run scripts/serve_policy.py \
+  policy:checkpoint \
+  --policy.config pi05_zaijia_0215 \
+  --policy.dir /home/pine/yzj/RoboTwin/policy/pi0/checkpoint/pi05_pour_50_0215/29999
+
+
+# ===========================
+# Terminal 1: ROS bridge
+/usr/bin/python3 /home/pine/yzj/src/ros_bridge.py
+
+# Terminal 2: Policy server（注意加 --default_prompt）
+cd /home/pine/yzj/openpi
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.6 uv run scripts/serve_policy.py \
+    policy:checkpoint \
+    --policy.config pi05_zaijia_0215 \
+    --policy.dir /home/pine/yzj/RoboTwin/policy/pi0/checkpoint/pi05_pour_50_0215/29999 \
+    --default_prompt "pour"
+
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.6 uv run scripts/serve_policy.py \
+  policy:checkpoint \
+  --policy.config pi05_zaijia_0215 \
+  --policy.dir /home/pine/yzj/RoboTwin/policy/pi0/checkpoint/pi05_pour_50_0215/29999
+
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.6 uv run scripts/serve_policy.py \
+  policy:checkpoint \
+  --policy.config pi05_zaijia_0215 \
+  --policy.dir /home/pine/yzj/RoboTwin/policy/pi0/checkpoint/pi05_pnp_apple_star_0226zaijia/29999
+
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.6 uv run scripts/serve_policy.py \
+  policy:checkpoint \
+  --policy.config pi05_zaijia_0215 \
+  --policy.dir /home/pine/yzj/RoboTwin/policy/pi0/checkpoint/pi05_pour_48_0226zaijia/29999
+
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.6 uv run scripts/serve_policy.py \
+  policy:checkpoint \
+  --policy.config pi05_zaijia_0215 \
+  --policy.dir /home/pine/yzj/RoboTwin/policy/pi0/checkpoint/pi05_pnp0218/29999
+  
+# Terminal 3: Controller
+cd /home/pine/yzj/src
+python deploy_pi0_1030.py --task_prompt "pour" --n_iterations 200
+python deploy_pi0_1030.py --task_prompt "pour" --n_iterations 200  --action_index 5
+
+python deploy_pi0_1030.py --task_prompt "pour" --n_iterations 200 --action_as_obs
+python deploy_pi0_1030.py --task_prompt "pour" --n_iterations 200 --action_as_obs --action_index 5
+python deploy_pi0_1030.py --task_prompt "pour" --n_iterations 200 --repeat_actions 3
+
+python deploy_pi0_1030.py --task_prompt "pour" --n_iterations 200 --action_as_obs --action_index 5
+
+python deploy_pi0_1030.py --task_prompt "pour" --action_as_obs --ensemble_size 4 --joint_tolerance 0.001
+python deploy_pi0_1030.py --task_prompt "pick up the banana and the pear, then place them on the plate" --action_as_obs --ensemble_size 4 --joint_tolerance 0.001
+python deploy_pi0_1030.py --task_prompt "pick up the banana and the pear, then place them on the plate" --n_iterations 200 
+python deploy_pi0_1030.py --task_prompt "pick up the banana and the pear, then place them on the plate" --action_as_obs --ensemble_size 2 --joint_tolerance 0.01
+
+# 必须
+conda deactivate
+# 2. 临时将 CUDA 12.1 设为当前终端的首选编译器
+export CUDA_HOME=/usr/local/cuda-12.1
+export PATH=$CUDA_HOME/bin:$PATH
+export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+# 1. 删掉刚才用旧版 CUDA 编译失败留下的缓存文件
+rm -rf build/ 
+rm -rf *.egg-info/
+
+# 2. 重新开始编译安装（这一步可能需要几分钟，请耐心等待）
+pip install -e .

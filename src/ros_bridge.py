@@ -289,7 +289,7 @@ class ROSBridge:
             if cmd.get('arm_left') is not None:
                 msg = JointState()
                 msg.header.stamp = rospy.Time.now()
-                msg.velocity = [0.01] * len(cmd['arm_left'])  # 设置速度
+                msg.velocity = [0.5] * 6  # 设置速度
                 msg.position = cmd['arm_left']
                 self.arm_left_pub.publish(msg)
             
@@ -297,7 +297,7 @@ class ROSBridge:
             if cmd.get('arm_right') is not None:
                 msg = JointState()
                 msg.header.stamp = rospy.Time.now()
-                msg.velocity = [0.01] * len(cmd['arm_right'])  # 设置速度  
+                msg.velocity = [0.5] * 6  # 设置速度  
                 print("12123")  
                 msg.position = cmd['arm_right']
                 self.arm_right_pub.publish(msg)
