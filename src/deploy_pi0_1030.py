@@ -242,8 +242,11 @@ class ZMQCommandPublisher:
     ], dtype=np.float32)
 
     # 不同任务的初始关节角度
+    # 初始化位置参数
+    # 1: pour（胸前，默认）
+    # 2: pnp_apple_star（竖直向下）
     TASK_INIT_POSITIONS = {
-        "pour": {
+        1: {  # 胸前 pour
             "left": np.array([
                 -0.16744680851063828, 2.0108510638297874, -0.6593617021276595,
                 2.002127659574468, 0.39382978723404255, -1.7193617021276595
@@ -255,7 +258,7 @@ class ZMQCommandPublisher:
             "gripper_left": 100.0,
             "gripper_right": 100.0,
         },
-        "pnp_apple_star": {
+        2: {  # 竖直向下 pnp_apple_star
             "left": np.array([
                 -0.6742553191489362, 2.656595744680851, -1.3061702127659574,
                 -0.0325531914893617, 1.4363829787234041, -1.2231914893617022,
@@ -271,9 +274,9 @@ class ZMQCommandPublisher:
         },
     }
 
-    # 默认使用 pour 的初始位置
-    INIT_LEFT_JOINTS = TASK_INIT_POSITIONS["pour"]["left"]
-    INIT_RIGHT_JOINTS = TASK_INIT_POSITIONS["pour"]["right"]
+    # 默认使用 pour（胸前）的初始位置
+    INIT_LEFT_JOINTS = TASK_INIT_POSITIONS[1]["left"]
+    INIT_RIGHT_JOINTS = TASK_INIT_POSITIONS[1]["right"]
     INIT_GRIPPER_LEFT = 100.0
     INIT_GRIPPER_RIGHT = 100.0
     INVALID_GRIPPER_VALUE = -2.7
@@ -350,23 +353,26 @@ class ZMQCommandPublisher:
             time.sleep(3.0)
         return success
 
-    def send_init_position(self, task="pour", wait_for_confirm=True):
-        """发送初始位置（根据任务选择）"""
-        # 根据 task 选择初始位置
-        task_key = self._match_task_key(task)
-        if task_key and task_key in self.TASK_INIT_POSITIONS:
-            init_cfg = self.TASK_INIT_POSITIONS[task_key]
+    def send_init_position(self, init_type=1, wait_for_confirm=True):
+        """发送初始位置（根据参数选择）
+        init_type: 1=胸前pour，2=竖直向下pnp，默认1
+        """
+        if init_type in self.TASK_INIT_POSITIONS:
+            init_cfg = self.TASK_INIT_POSITIONS[init_type]
             left_joints = init_cfg["left"]
             right_joints = init_cfg["right"]
             left_gripper = init_cfg.get("gripper_left", 100.0)
             right_gripper = init_cfg.get("gripper_right", 100.0)
-            print(f"\n  Using init position for task: {task_key}")
+            if init_type == 1:
+                print("\n  Using INIT_TYPE 1: pour (胸前)")
+            elif init_type == 2:
+                print("\n  Using INIT_TYPE 2: pnp_apple_star (竖直向下)")
         else:
             left_joints = self.INIT_LEFT_JOINTS
             right_joints = self.INIT_RIGHT_JOINTS
             left_gripper = self.INIT_GRIPPER_LEFT
             right_gripper = self.INIT_GRIPPER_RIGHT
-            print(f"\n  Using default init position (no match for '{task}')")
+            print(f"\n  Using default init position (invalid init_type={init_type})")
 
         print("\n" + "=" * 60)
         print("STEP 2: MOVE TO INITIAL POSITION")
@@ -592,15 +598,17 @@ class PI0RobotController:
 
         return left_joints, left_gripper_raw, right_joints, right_gripper_raw, (left_ok, right_ok)
 
-    def initialize_robot(self, task="pour", wait_for_confirm=True):
-        """机器人初始化流程: 抬手 -> 初始位置 -> 确认"""
+    def initialize_robot(self, init_type=1, wait_for_confirm=True):
+        """机器人初始化流程: 抬手 -> 初始位置 -> 确认
+        init_type: 1=胸前pour，2=竖直向下pnp，默认1
+        """
         # Step 1: 抬手
         lift_result = self.cmd_pub.send_lift_arm_position(wait_for_confirm=wait_for_confirm)
         if lift_result is False:
             return False
 
-        # Step 2: 初始位置（根据任务选择）
-        init_ok = self.cmd_pub.send_init_position(task=task, wait_for_confirm=wait_for_confirm)
+        # Step 2: 初始位置（根据参数选择）
+        init_ok = self.cmd_pub.send_init_position(init_type=init_type, wait_for_confirm=wait_for_confirm)
         if not init_ok:
             return False
 
@@ -975,7 +983,8 @@ class PI0RobotController:
 
 def main():
     parser = argparse.ArgumentParser(description="PI0 R1 Dual-Arm Controller (Server-Client Mode)")
-
+    parser.add_argument("--init_type", type=int, default=1,
+                            help="Init position type: 1=胸前pour(默认), 2=竖直向下pnp")
     # 连接参数
     parser.add_argument("--websocket_host", type=str, default="localhost",
                         help="serve_policy.py host")
@@ -1040,6 +1049,10 @@ def main():
         video_dir=args.video_dir,
     )
 
+    # 传递init_type参数给初始化流程
+    if not args.no_init:
+        controller.initialize_robot(init_type=args.init_type, wait_for_confirm=True)
+
     controller.run_control_loop(
         task_prompt=args.task_prompt,
         n_iterations=args.n_iterations,
@@ -1047,7 +1060,7 @@ def main():
         action_index=args.action_index,
         execute_steps=args.execute_steps,
         execution_delay=args.execution_delay,
-        init_robot=not args.no_init,
+        init_robot=False,  # 已在上面初始化
         confirm_each=args.confirm_each,
         action_as_obs=args.action_as_obs,
         repeat_actions=args.repeat_actions,
